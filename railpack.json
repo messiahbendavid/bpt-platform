@@ -1,0 +1,13 @@
+{
+  "build": {
+    "cmds": [
+      "npm install -g pnpm",
+      "pnpm install --no-frozen-lockfile",
+      "pnpm --filter @bpt/shared build",
+      "pnpm --filter @bpt/worker build"
+    ]
+  },
+  "start": {
+    "cmd": "node apps/worker/dist/index.js"
+  }
+}
