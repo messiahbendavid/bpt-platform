@@ -23,8 +23,14 @@ function ewmSlope(values: (number | null)[], span = 4): number | null {
   return (last - ref) / Math.abs(ref);
 }
 
+export interface DailyCloseData {
+  closes: Map<string, number>;
+  high52w: number | null;
+  low52w: number | null;
+}
+
 // ── Fetch 3 years of daily closes in ONE call, return date→close map ────────
-async function fetchDailyCloses(ticker: string): Promise<Map<string, number>> {
+export async function fetchDailyCloses(ticker: string): Promise<DailyCloseData> {
   const map = new Map<string, number>();
 
   // 1. Try our DB (has recent data from restBackfill)
@@ -59,7 +65,17 @@ async function fetchDailyCloses(ticker: string): Promise<Map<string, number>> {
     console.warn(`[financials] daily closes ${ticker}:`, (err as Error).message);
   }
 
-  return map;
+  // Compute 52-week high/low from the map
+  const cutoff52w = new Date(Date.now() - 365 * 86_400_000).toISOString().slice(0, 10);
+  let high52w: number | null = null;
+  let low52w: number | null  = null;
+  for (const [date, close] of map) {
+    if (date < cutoff52w) continue;
+    if (high52w === null || close > high52w) high52w = close;
+    if (low52w  === null || close < low52w)  low52w  = close;
+  }
+
+  return { closes: map, high52w, low52w };
 }
 
 // ── Find closest trading day price within ±7 days ──────────────────────────
@@ -99,9 +115,17 @@ async function fetchFromPolygon(ticker: string): Promise<QuarterlyFinancials[]> 
     const bal = fin.balance_sheet       ?? {};
 
     const ncfoa    = cf.net_cash_flow_from_operating_activities?.value ?? null;
-    const capexRaw = cf.capital_expenditure?.value ?? null;
+    const ncfia    = cf.net_cash_flow_from_investing_activities?.value ?? null;
+    const capexRaw = cf.capital_expenditure?.value
+                  ?? cf.payments_for_property_plant_and_equipment?.value
+                  ?? null;
     const capex    = capexRaw !== null ? Math.abs(capexRaw) : null;
-    const fcf      = ncfoa !== null && capex !== null ? ncfoa - capex : null;
+    // FCF = OCF - capex; if capex unknown fall back to OCF + investingCF (ncfia is negative)
+    const fcf      = ncfoa !== null
+      ? capex !== null
+        ? ncfoa - capex
+        : ncfia !== null ? ncfoa + ncfia : null
+      : null;
 
     const equity = bal.equity_attributable_to_parent?.value ?? bal.equity?.value ?? null;
     const debt   = bal.long_term_debt?.value ?? null;
@@ -115,7 +139,7 @@ async function fetchFromPolygon(ticker: string): Promise<QuarterlyFinancials[]> 
       netIncome:        inc.net_income_loss?.value                   ?? null,
       ncf:              cf.net_cash_flow?.value                      ?? null,
       ncfoa,
-      ncfia:            cf.net_cash_flow_from_investing_activities?.value ?? null,
+      ncfia,
       capex,
       fcf,
       dilutedEps:       inc.diluted_earnings_per_share?.value        ?? null,
@@ -167,14 +191,14 @@ export async function fetchQuarterlyData(
   }
 
   // Fetch financials + 3 years of daily closes (2 API calls total per ticker)
-  const [fresh, closes] = await Promise.all([
+  const [fresh, { closes, high52w, low52w }] = await Promise.all([
     fetchFromPolygon(ticker),
     fetchDailyCloses(ticker),
   ]);
 
   if (fresh.length === 0) return [];
 
-  console.log(`[financials] ${ticker}: ${fresh.length} quarters, ${closes.size} daily closes`);
+  console.log(`[financials] ${ticker}: ${fresh.length} quarters, ${closes.size} daily closes h52=${high52w?.toFixed(2)} l52=${low52w?.toFixed(2)}`);
 
   // Align price to each quarter's filing date
   for (const q of fresh) {
@@ -184,6 +208,7 @@ export async function fetchQuarterlyData(
 
   const pricesFound = fresh.filter((q) => q.priceAtPeriod !== null).length;
   console.log(`[financials] ${ticker}: ${pricesFound}/${fresh.length} quarters have priceAtPeriod`);
+
 
   const rows = fresh.map((q) => ({
     symbol_id:          symbolId,

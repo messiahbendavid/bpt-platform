@@ -1,6 +1,6 @@
 import pLimit from 'p-limit';
 import { supabase } from '../db/supabaseClient.js';
-import { fetchQuarterlyData, computeSlopes } from './financialsFetcher.js';
+import { fetchQuarterlyData, computeSlopes, fetchDailyCloses } from './financialsFetcher.js';
 import { computeDecorrelation } from './decorrelation.js';
 import { getAllLatestPrices } from '../buffer/priceBuffer.js';
 
@@ -35,11 +35,21 @@ export async function runCorrelationPipeline(
             livePrices.get(sym.ticker) ?? (await lastHistoricalPrice(sym.ticker));
           if (!currentPrice) return;
 
-          const quarters = await fetchQuarterlyData(sym.ticker, sym.id);
+          const [quarters, { high52w, low52w }] = await Promise.all([
+            fetchQuarterlyData(sym.ticker, sym.id),
+            fetchDailyCloses(sym.ticker),
+          ]);
           if (quarters.length === 0) return;
 
           const slopes = computeSlopes(quarters);
           const result = computeDecorrelation(sym.ticker, sym.id, quarters, currentPrice);
+
+          // 52-week percentile (lower = better = buying near lows)
+          let price52wPct: number | null = null;
+          if (high52w !== null && low52w !== null) {
+            const range = high52w - low52w;
+            if (range > 0) price52wPct = ((currentPrice - low52w) / range) * 100;
+          }
 
           // Always upsert correlation_scores so merit_scores can read it
           const corrRow = result
@@ -70,22 +80,26 @@ export async function runCorrelationPipeline(
 
           await supabase.from('correlation_scores').insert(corrRow);
 
-          // Seed merit_scores with fundamental + correlation data even without a live bitstream snap
+          // Seed merit_scores with fundamental + correlation + 52W data
           await supabase.from('merit_scores').upsert(
             {
               symbol_id:        sym.id,
               ticker:           sym.ticker,
               current_price:    currentPrice,
-              rev_slope_5:      slopes.Rev_Slope_5   ?? null,
-              fcf_slope_5:      slopes.FCF_Slope_5   ?? null,
-              fcfy:             slopes.FCFY           ?? null,
-              corr_at_earnings: result?.revCorr               ?? null,
-              corr_now:         result?.revCorrCurrent        ?? null,
-              corr_delta:       result?.revCorrDiff           ?? null,
-              decorr_score:     result?.decorrScore           ?? null,
-              divergence:       result?.priceVsRevDivergence  ?? null,
-              is_decorrelating: result?.isDecorrelating       ?? false,
-              is_tradable:      false,   // bitstreamTick sets true when stasis qualifies
+              price_52w_high:   high52w,
+              price_52w_low:    low52w,
+              price_52w_pct:    price52wPct,
+              fms_52w_percentile: price52wPct,
+              rev_slope_5:      slopes.Rev_Slope_5                    ?? null,
+              fcf_slope_5:      slopes.FCF_Slope_5                    ?? null,
+              fcfy:             slopes.FCFY                           ?? null,
+              corr_at_earnings: result?.revCorr                       ?? null,
+              corr_now:         result?.revCorrCurrent                ?? null,
+              corr_delta:       result?.revCorrDiff                   ?? null,
+              decorr_score:     result?.decorrScore                   ?? null,
+              divergence:       result?.priceVsRevDivergence          ?? null,
+              is_decorrelating: result?.isDecorrelating               ?? false,
+              is_tradable:      false,
               is_stasis_active: false,
               computed_at:      new Date().toISOString(),
               updated_at:       new Date().toISOString(),

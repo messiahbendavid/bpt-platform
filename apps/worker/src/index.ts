@@ -8,11 +8,13 @@ import { startCorrelationCron } from './scheduler/correlationCron.js';
 const TICK_INTERVAL_MS = parseInt(process.env.WORKER_TICK_INTERVAL_MS ?? '1000', 10);
 const LOOKBACK_DAYS    = parseInt(process.env.WORKER_HISTORICAL_LOOKBACK_DAYS ?? '5', 10);
 
+type BarList = Array<{ price: number; timestamp: Date }>;
+
 async function fetchHistoricalBars(
   tickers: string[],
-): Promise<Map<string, Array<{ price: number; timestamp: Date }>>> {
+): Promise<Map<string, BarList>> {
   const since = new Date(Date.now() - LOOKBACK_DAYS * 86_400_000).toISOString();
-  const result = new Map<string, Array<{ price: number; timestamp: Date }>>();
+  const result = new Map<string, BarList>();
 
   const { data } = await supabase
     .from('price_ticks')
@@ -47,14 +49,28 @@ async function main() {
   const symbolIdMap = new Map(symbols.map((s) => [s.ticker, s.id]));
   const tickers     = symbols.map((s) => s.ticker);
 
-  // On weekends/after-hours, seed price buffer from last trading day's REST data
-  if (!isMarketOpen()) {
-    await runRestBackfill(tickers);
+  // Fetch DB historical bars and REST bars in parallel
+  const [dbBars, restBars] = await Promise.all([
+    fetchHistoricalBars(tickers),
+    isMarketOpen() ? Promise.resolve(new Map<string, BarList>()) : runRestBackfill(tickers),
+  ]);
+
+  // Merge REST bars (last trading day minute bars) into DB bars per ticker,
+  // keeping chronological order. REST bars win if DB is empty for that symbol.
+  const historicalBars = new Map<string, BarList>(dbBars);
+  for (const [ticker, bars] of restBars) {
+    if (!historicalBars.has(ticker) || historicalBars.get(ticker)!.length === 0) {
+      historicalBars.set(ticker, bars);
+    } else {
+      // Append REST bars that are newer than the last DB bar
+      const existing = historicalBars.get(ticker)!;
+      const lastTs   = existing[existing.length - 1].timestamp.getTime();
+      const newBars  = bars.filter((b) => b.timestamp.getTime() > lastTs);
+      existing.push(...newBars);
+    }
   }
 
-  // Load historical bars and backfill bitstreams
-  const historicalBars = await fetchHistoricalBars(tickers);
-  console.log(`[worker] Fetched historical bars for ${historicalBars.size} symbols`);
+  console.log(`[worker] Historical bars for ${historicalBars.size} symbols (db=${dbBars.size} rest=${restBars.size})`);
   await backfillBitstreams(symbols, historicalBars);
 
   // Start live WebSocket feed
