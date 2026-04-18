@@ -22,23 +22,36 @@ function ewmSlope(values: (number | null)[], span = 4): number | null {
   return (last - ref) / Math.abs(ref);
 }
 
-// ── Fetch one closing price near a given date from our DB ──────────────────
+// ── Fetch one closing price near a given date ──────────────────────────────
 async function priceNear(ticker: string, dateStr: string): Promise<number | null> {
-  // Look ±7 days around the target date
   const target = new Date(dateStr);
   const from = new Date(target.getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
   const to   = new Date(target.getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
 
+  // Try our DB first (fast path for recent dates)
   const { data } = await supabase
     .from('historical_prices')
-    .select('close_price, trade_date')
+    .select('close_price')
     .eq('ticker', ticker)
     .gte('trade_date', from)
     .lte('trade_date', to)
     .order('trade_date', { ascending: false })
     .limit(1);
 
-  return data?.[0]?.close_price ?? null;
+  if (data?.[0]?.close_price != null) return data[0].close_price as number;
+
+  // Fall back to Polygon daily aggregates for historical dates
+  try {
+    const url =
+      `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${from}/${to}` +
+      `?sort=desc&limit=1&apiKey=${POLYGON_API_KEY}`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = (await res.json()) as { results?: Array<{ c: number }> };
+    return json.results?.[0]?.c ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // ── Pull raw financials from Polygon vX ────────────────────────────────────
