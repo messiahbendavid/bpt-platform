@@ -15,14 +15,12 @@ interface SymbolRecord {
   instrument_type: string;
 }
 
-// Stateful bitstream store: key = `{ticker}::{threshold}`
 const bitstreamStore = new Map<string, Bitstream>();
+const volumeCache    = new Map<string, number>();
+const quartersCache  = new Map<string, QuarterlyFinancials[]>();
 
-// Volume cache
-const volumeCache = new Map<string, number>();
-
-// Quarters cache
-const quartersCache = new Map<string, QuarterlyFinancials[]>();
+// Track last known tradable state to avoid redundant DB resets
+const lastTradable = new Map<string, boolean>();
 
 function key(ticker: string, threshold: number): string {
   return `${ticker}::${threshold}`;
@@ -104,7 +102,7 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       bs.processPrice(price, now);
     }
 
-    // Find best snapshot (highest stasis count among tradable)
+    // Find best snapshot (highest stasis count among tradable snaps)
     let bestSnap = null;
     for (const threshold of AM_THRESHOLDS) {
       const bs   = bitstreamStore.get(key(sym.ticker, threshold));
@@ -114,9 +112,37 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       if (!bestSnap || snap.stasis > bestSnap.stasis) bestSnap = snap;
     }
 
-    if (!bestSnap) continue;
+    const isNowTradable = bestSnap !== null;
+    const wasTrading    = lastTradable.get(sym.ticker) ?? false;
 
-    // Fetch supporting data
+    if (!isNowTradable) {
+      // Stasis not active — reset flags in DB only if state changed
+      if (wasTrading) {
+        lastTradable.set(sym.ticker, false);
+        await supabase.from('merit_scores').upsert({
+          symbol_id:        sym.id,
+          ticker:           sym.ticker,
+          current_price:    price,
+          sms_stasis_count: 0,
+          sms_total:        0,
+          direction:        null,
+          signal_strength:  null,
+          band_threshold:   null,
+          take_profit:      null,
+          stop_loss:        null,
+          stasis_duration_str: null,
+          is_tradable:      false,
+          is_stasis_active: false,
+          updated_at:       now.toISOString(),
+          computed_at:      now.toISOString(),
+        }, { onConflict: 'ticker' });
+      }
+      continue;
+    }
+
+    // ── Active tradable snap ──────────────────────────────────────────────
+    lastTradable.set(sym.ticker, true);
+
     const [meta52w, quarters, corrRow, priorScore] = await Promise.all([
       fetch52w(sym.ticker),
       sym.instrument_type === 'equity'
@@ -140,18 +166,18 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
         .maybeSingle(),
     ]);
 
+    if (!bestSnap) continue; // re-check after async gap (TS narrowing)
     const w52Pct = meta52w ? percentile52w(price, meta52w.low, meta52w.high) : null;
-
-    const slopes  = quarters.length > 0 ? computeSlopes(quarters) : {};
-    const sms     = calculateSMS(bestSnap);
+    const slopes = quarters.length > 0 ? computeSlopes(quarters) : {};
+    const sms    = calculateSMS(bestSnap);
     const { score: fms } = calculateFMS(quarters, w52Pct, slopes);
 
     const cd = corrRow.data;
     const corrData = cd ? {
-      corrAtEarnings:       cd.rev_corr            ?? null,
-      corrNow:              cd.rev_corr_current     ?? null,
-      corrDelta:            cd.rev_corr_diff        ?? null,
-      decorrelationScore:   cd.decorr_score         ?? null,
+      corrAtEarnings:       cd.rev_corr                   ?? null,
+      corrNow:              cd.rev_corr_current            ?? null,
+      corrDelta:            cd.rev_corr_diff               ?? null,
+      decorrelationScore:   cd.decorr_score                ?? null,
       priceVsRevDivergence: (cd.price_vs_rev_divergence as 'PRICE_AHEAD' | 'PRICE_BEHIND' | 'ALIGNED' | null) ?? null,
     } : null;
 
@@ -171,12 +197,11 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       symbol_id:    sym.id,
       ticker:       sym.ticker,
 
-      current_price:   price,
-      price_52w_high:  meta52w?.high ?? null,
-      price_52w_low:   meta52w?.low  ?? null,
-      price_52w_pct:   w52Pct,
+      current_price:  price,
+      price_52w_high: meta52w?.high ?? null,
+      price_52w_low:  meta52w?.low  ?? null,
+      price_52w_pct:  w52Pct,
 
-      // SMS columns
       sms_stasis_count:    bestSnap.stasis,
       sms_risk_reward:     bestSnap.riskReward,
       sms_signal_strength: bestSnap.signalStrength
@@ -185,9 +210,6 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       sms_duration_hrs:    bestSnap.durationSeconds / 3600,
       sms_total:           sms,
 
-      fms_net_income:     null,
-      fms_cash_flows:     null,
-      fms_revenue_trend:  null,
       fms_52w_percentile: w52Pct,
       fms_total:          fms,
 
@@ -198,15 +220,14 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
 
       tms,
 
-      // 23-column dashboard extras
       band_threshold:      bestSnap.threshold,
       direction:           bestSnap.direction,
       signal_strength:     bestSnap.signalStrength ?? null,
-      corr_at_earnings:    corrData?.corrAtEarnings   ?? null,
-      corr_now:            corrData?.corrNow          ?? null,
-      corr_delta:          corrData?.corrDelta        ?? null,
-      decorr_score:        corrData?.decorrelationScore ?? null,
-      divergence:          corrData?.priceVsRevDivergence ?? null,
+      corr_at_earnings:    corrData?.corrAtEarnings        ?? null,
+      corr_now:            corrData?.corrNow               ?? null,
+      corr_delta:          corrData?.corrDelta             ?? null,
+      decorr_score:        corrData?.decorrelationScore    ?? null,
+      divergence:          corrData?.priceVsRevDivergence  ?? null,
       rev_slope_5:         (slopes as Record<string, number | null>)['Rev_Slope_5'] ?? null,
       fcf_slope_5:         (slopes as Record<string, number | null>)['FCF_Slope_5'] ?? null,
       fcfy:                (slopes as Record<string, number | null>)['FCFY']        ?? null,
@@ -214,7 +235,7 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       stop_loss:           bestSnap.stopLoss    ?? null,
       stasis_duration_str: durationStr,
 
-      is_tradable:      sym.is_tradable,
+      is_tradable:      true,   // only reach here when bestSnap.isTradable === true
       is_decorrelating: cd?.is_decorrelating ?? false,
       is_stasis_active: bestSnap.stasis >= 2,
 
