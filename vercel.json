@@ -1,8 +1,7 @@
 {
   "version": 2,
+  "installCommand": "npm install -g pnpm && pnpm install --no-frozen-lockfile",
   "buildCommand": "pnpm --filter @bpt/shared build && pnpm --filter @bpt/web build",
   "outputDirectory": "apps/web/dist",
-  "installCommand": "pnpm install",
-  "framework": "vite",
-  "ignoreCommand": "git diff HEAD^ HEAD --quiet -- apps/web packages/shared"
+  "framework": null
 }
