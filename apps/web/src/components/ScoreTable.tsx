@@ -12,8 +12,8 @@ import type { MeritScore } from '@bpt/shared';
 const col = createColumnHelper<MeritScore>();
 
 // ── Formatters ──────────────────────────────────────────────────────────────
-const fmt2   = (v: number | null | undefined) => v != null ? v.toFixed(2)  : '—';
-const fmt4   = (v: number | null | undefined) => v != null ? v.toFixed(4)  : '—';
+const fmtInt   = (v: number | null | undefined) => v != null ? String(Math.round(v)) : '—';
+const fmt2     = (v: number | null | undefined) => v != null ? v.toFixed(2)  : '—';
 const fmtCorr  = (v: number | null | undefined) => v != null ? v.toFixed(3)  : '—';
 const fmtSlope = (v: number | null | undefined) => v != null ? v.toFixed(4)  : '—';
 const fmtPct   = (v: number | null | undefined) => v != null ? `${(v * 100).toFixed(1)}%` : '—';
@@ -27,17 +27,17 @@ const COLUMNS = [
   col.accessor('isTradable',    { header: '✓',    size: 24,  cell: (i) => i.getValue() ? '✓' : '' }),
   col.accessor('ticker',        { header: 'SYM',  size: 72 }),
   col.accessor('bandThreshold', { header: 'BAND', size: 72,  cell: (i) => fmtBand(i.getValue()) }),
-  col.accessor('smsStasisCount',{ header: 'STS',  size: 48 }),
+  col.accessor('smsStasisCount',{ header: 'STS',  size: 48, cell: (i) => fmtInt(i.getValue()) }),
   col.accessor('direction',     { header: 'DIR',  size: 56,  cell: (i) => {
     const v = i.getValue();
     if (v === 'LONG')  return <span style={{ color: '#4caf50' }}>LONG</span>;
     if (v === 'SHORT') return <span style={{ color: '#f44336' }}>SHORT</span>;
     return '—';
   }}),
-  col.accessor('smsTotal', { header: 'SMS', size: 48, cell: (i) => fmt4(i.getValue()) }),
-  col.accessor('fmsTotal', { header: 'FMS', size: 48, cell: (i) => fmt4(i.getValue()) }),
-  col.accessor('cmsTotal', { header: 'CMS', size: 48, cell: (i) => fmt4(i.getValue()) }),
-  col.accessor('tms',      { header: 'TMS', size: 56, cell: (i) => fmt4(i.getValue()) }),
+  col.accessor('smsTotal', { header: 'SMS', size: 48, cell: (i) => fmtInt(i.getValue()) }),
+  col.accessor('fmsTotal', { header: 'FMS', size: 48, cell: (i) => fmtInt(i.getValue()) }),
+  col.accessor('cmsTotal', { header: 'CMS', size: 48, cell: (i) => fmtInt(i.getValue()) }),
+  col.accessor('tms',      { header: 'TMS', size: 56, cell: (i) => fmtInt(i.getValue()) }),
 
   col.accessor('corrAtEarnings', { header: 'C@E',  size: 64, cell: (i) => fmtCorr(i.getValue()) }),
   col.accessor('corrNow',        { header: 'C@N',  size: 64, cell: (i) => fmtCorr(i.getValue()) }),
