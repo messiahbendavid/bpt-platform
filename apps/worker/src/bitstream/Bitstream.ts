@@ -47,9 +47,9 @@ export class Bitstream {
   volume: number;
 
   private referencePrice: number;
-  private bandWidth: number;
-  private upperBand: number;
-  private lowerBand: number;
+  private bandWidth!: number;
+  private upperBand!: number;
+  private lowerBand!: number;
   private bits: BitEntry[] = [];
   private readonly MAX_BITS = 500;
 

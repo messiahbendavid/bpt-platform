@@ -133,7 +133,7 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       corrDelta:            corrRow.data.rev_corr_diff,
       decorrelationScore:   Math.abs(corrRow.data.diff_sum ?? 0),
       priceVsRevDivergence: corrRow.data.is_decorrelating
-        ? (corrRow.data.rev_corr_diff < 0 ? 'PRICE_AHEAD' : 'PRICE_BEHIND')
+        ? (corrRow.data.rev_corr_diff < 0 ? 'PRICE_AHEAD' as const : 'PRICE_BEHIND' as const)
         : null,
     } : null;
 
