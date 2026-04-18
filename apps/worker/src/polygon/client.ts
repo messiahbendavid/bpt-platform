@@ -1,7 +1,7 @@
 import WebSocket from 'ws';
 import { ingestTick } from '../buffer/priceBuffer.js';
 
-const WS_URL = process.env.POLYGON_WS_URL ?? 'wss://socket.polygon.io/stocks';
+const WS_URL = process.env.POLYGON_WS_URL ?? 'wss://socket.massive.com/stocks';
 const API_KEY = process.env.POLYGON_API_KEY ?? '';
 
 type PolygonMessage = {
@@ -88,10 +88,19 @@ function _connect(): void {
 }
 
 function _subscribe(symbols: string[]): void {
-  const batchSize = parseInt(process.env.WORKER_MAX_SYMBOLS_PER_BATCH ?? '50', 10);
-  for (let i = 0; i < symbols.length; i += batchSize) {
-    const batch = symbols.slice(i, i + batchSize);
+  const batchSize = parseInt(process.env.WORKER_MAX_SYMBOLS_PER_BATCH ?? '25', 10);
+  const delayMs   = parseInt(process.env.WORKER_SUBSCRIBE_DELAY_MS ?? '500', 10);
+
+  symbols.forEach((s, i) => {
+    const batchIndex = Math.floor(i / batchSize);
+    if (i % batchSize !== 0) return;
+    const batch  = symbols.slice(i, i + batchSize);
     const params = batch.map((s) => `AM.${s}`).join(',');
-    ws!.send(JSON.stringify({ action: 'subscribe', params }));
-  }
+    setTimeout(() => {
+      if (ws?.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ action: 'subscribe', params }));
+        console.log(`[polygon] Subscribed batch ${batchIndex + 1}: ${batch.length} symbols`);
+      }
+    }, batchIndex * delayMs);
+  });
 }
