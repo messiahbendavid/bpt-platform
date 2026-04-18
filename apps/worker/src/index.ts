@@ -1,5 +1,6 @@
 import { supabase } from './db/supabaseClient.js';
 import { connect } from './polygon/client.js';
+import { runRestBackfill, isMarketOpen } from './polygon/restBackfill.js';
 import { flushToDatabase } from './buffer/priceBuffer.js';
 import { runBitstreamCycle } from './scheduler/bitstreamTick.js';
 import { startCorrelationCron } from './scheduler/correlationCron.js';
@@ -26,6 +27,11 @@ async function main() {
 
   connect(tickers);
   startCorrelationCron(symbols);
+
+  // On weekends/after-hours, seed price buffer from last trading day's REST data
+  if (!isMarketOpen()) {
+    await runRestBackfill(tickers);
+  }
 
   setInterval(async () => {
     try {

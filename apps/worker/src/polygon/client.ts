@@ -43,6 +43,8 @@ function _connect(): void {
       return;
     }
 
+    console.log('[polygon] raw message:', data.toString().slice(0, 300));
+
     for (const msg of messages) {
       if (msg.ev === 'connected') {
         console.log('[polygon] Connected to server');
