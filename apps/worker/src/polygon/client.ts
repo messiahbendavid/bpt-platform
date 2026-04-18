@@ -44,7 +44,10 @@ function _connect(): void {
     }
 
     for (const msg of messages) {
-      if (msg.ev === 'connected') continue;
+      if (msg.ev === 'connected') {
+        console.log('[polygon] Connected to server');
+        continue;
+      }
 
       if (msg.ev === 'auth_success') {
         connected = true;
@@ -52,6 +55,12 @@ function _connect(): void {
         console.log(`[polygon] Authenticated — subscribing to ${trackedSymbols.length} symbols`);
         _subscribe(trackedSymbols);
         continue;
+      }
+
+      if (msg.ev === 'auth_failed') {
+        console.error('[polygon] AUTH FAILED — check your API key and plan tier. Raw:', JSON.stringify(msg));
+        ws?.close();
+        return;
       }
 
       if (msg.ev === 'AM' && msg.sym) {
