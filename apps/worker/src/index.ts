@@ -1,4 +1,3 @@
-import 'dotenv/config';
 import { supabase } from './db/supabaseClient.js';
 import { connect } from './polygon/client.js';
 import { flushToDatabase } from './buffer/priceBuffer.js';
