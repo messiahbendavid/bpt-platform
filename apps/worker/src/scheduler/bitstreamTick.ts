@@ -3,10 +3,7 @@ import { supabase } from '../db/supabaseClient.js';
 import { getAllLatestPrices } from '../buffer/priceBuffer.js';
 import { Bitstream } from '../bitstream/Bitstream.js';
 import { calculateSMS } from '../scoring/sms.js';
-import { calculateFMS } from '../scoring/fms.js';
 import { calculateCMS } from '../scoring/cms.js';
-import { fetchQuarterlyData, computeSlopes } from '../correlation/financialsFetcher.js';
-import type { QuarterlyFinancials } from '@bpt/shared';
 
 interface SymbolRecord {
   id: string;
@@ -17,7 +14,6 @@ interface SymbolRecord {
 
 const bitstreamStore = new Map<string, Bitstream>();
 const volumeCache    = new Map<string, number>();
-const quartersCache  = new Map<string, QuarterlyFinancials[]>();
 
 // Track last known tradable state to avoid redundant DB resets
 const lastTradable = new Map<string, boolean>();
@@ -143,15 +139,8 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
     // ── Active tradable snap ──────────────────────────────────────────────
     lastTradable.set(sym.ticker, true);
 
-    const [meta52w, quarters, corrRow, priorScore] = await Promise.all([
+    const [meta52w, corrRow, priorScore] = await Promise.all([
       fetch52w(sym.ticker),
-      sym.instrument_type === 'equity'
-        ? (quartersCache.get(sym.ticker) ??
-            fetchQuarterlyData(sym.ticker, sym.id).then((q) => {
-              quartersCache.set(sym.ticker, q);
-              return q;
-            }))
-        : Promise.resolve([]),
       supabase
         .from('correlation_scores')
         .select('rev_corr,rev_corr_current,rev_corr_diff,decorr_score,price_vs_rev_divergence,is_decorrelating')
@@ -161,16 +150,15 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
         .maybeSingle(),
       supabase
         .from('merit_scores')
-        .select('tms')
+        .select('tms, fms_total, rev_slope_5, fcf_slope_5, fcfy')
         .eq('ticker', sym.ticker)
         .maybeSingle(),
     ]);
 
     if (!bestSnap) continue; // re-check after async gap (TS narrowing)
     const w52Pct = meta52w ? percentile52w(price, meta52w.low, meta52w.high) : null;
-    const slopes = quarters.length > 0 ? computeSlopes(quarters) : {};
     const sms    = calculateSMS(bestSnap);
-    const { score: fms } = calculateFMS(quarters, w52Pct, slopes);
+    const fms    = priorScore.data?.fms_total ?? 0;
 
     const cd = corrRow.data;
     const corrData = cd ? {
@@ -212,6 +200,9 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
 
       fms_52w_percentile: w52Pct,
       fms_total:          fms,
+      rev_slope_5:        priorScore.data?.rev_slope_5 ?? null,
+      fcf_slope_5:        priorScore.data?.fcf_slope_5 ?? null,
+      fcfy:               priorScore.data?.fcfy        ?? null,
 
       cms_decorr_magnitude: corrData?.decorrelationScore ?? null,
       cms_delta_rate:       corrData?.corrDelta          ?? null,
@@ -228,9 +219,6 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       corr_delta:          corrData?.corrDelta             ?? null,
       decorr_score:        corrData?.decorrelationScore    ?? null,
       divergence:          corrData?.priceVsRevDivergence  ?? null,
-      rev_slope_5:         (slopes as Record<string, number | null>)['Rev_Slope_5'] ?? null,
-      fcf_slope_5:         (slopes as Record<string, number | null>)['FCF_Slope_5'] ?? null,
-      fcfy:                (slopes as Record<string, number | null>)['FCFY']        ?? null,
       take_profit:         bestSnap.takeProfit  ?? null,
       stop_loss:           bestSnap.stopLoss    ?? null,
       stasis_duration_str: durationStr,

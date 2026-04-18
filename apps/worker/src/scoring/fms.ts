@@ -1,80 +1,115 @@
-import type { QuarterlyFinancials, FundamentalSlopes } from '@bpt/shared';
+import type { MetricSlopes } from '@bpt/shared';
 
-function last5AllPositive(series: (number | null)[]): boolean {
-  if (series.length < 5) return false;
-  return series.slice(-5).every((x) => x !== null && x > 0);
+interface MetricDef {
+  key: string;
+  tier: 1 | 2 | 3;
+  invert: boolean;
 }
 
-function last5LatestIsHighest(series: (number | null)[]): boolean {
-  if (series.length < 5) return false;
-  const last5 = series.slice(-5);
-  if (last5.some((x) => x === null)) return false;
-  const vals = last5 as number[];
-  return vals[vals.length - 1] === Math.max(...vals);
+// 20 fundamental metrics across 3 tiers
+const METRICS: MetricDef[] = [
+  // Tier 1 — Core growth & cash generation (weight 3)
+  { key: 'rev',     tier: 1, invert: false },
+  { key: 'ni',      tier: 1, invert: false },
+  { key: 'ocf',     tier: 1, invert: false },
+  { key: 'fcf',     tier: 1, invert: false },
+  { key: 'fcfy',    tier: 1, invert: false },
+  // Tier 2 — Quality & efficiency (weight 2)
+  { key: 'oi',      tier: 2, invert: false },
+  { key: 'gp',      tier: 2, invert: false },
+  { key: 'npm',     tier: 2, invert: false },
+  { key: 'roe',     tier: 2, invert: false },
+  { key: 'gm',      tier: 2, invert: false },
+  { key: 'om',      tier: 2, invert: false },
+  { key: 'buyback', tier: 2, invert: false },
+  { key: 'cash',    tier: 2, invert: false },
+  // Tier 3 — Valuation & balance sheet structure (weight 1)
+  { key: 'pe',      tier: 3, invert: true  },  // declining P/E = good
+  { key: 'de',      tier: 3, invert: true  },  // declining debt/equity = good
+  { key: 'pb',      tier: 3, invert: true  },  // declining price/book = cheaper
+  { key: 'ps',      tier: 3, invert: true  },  // declining price/sales = cheaper
+  { key: 'assets',  tier: 3, invert: false },
+  { key: 'equity',  tier: 3, invert: false },
+  { key: 'liab',    tier: 3, invert: true  },  // growing liabilities = bad
+];
+
+const TIER_WEIGHT: Record<number, number> = { 1: 3, 2: 2, 3: 1 };
+const SHORT_WEIGHT = 1.1;  // short (5q) slopes weighted slightly more
+const LONG_WEIGHT  = 1.0;
+const FMS_SCALE    = 8;    // weighted-avg(0-1) × 52W-mult(1-2.5) × 8 → 0-20
+
+// Returns the fraction of values strictly below `value` in the sorted universe.
+// Requires at least 2 peers to produce a meaningful rank.
+function percentileRank(value: number, universe: number[]): number {
+  if (universe.length < 2) return 0.5;
+  const below = universe.filter((v) => v < value).length;
+  return below / universe.length;
 }
 
-/** Port of calculate_fundamental_merit_score() from app.py */
-export function calculateFMS(
-  quarters: QuarterlyFinancials[],
-  w52Pct: number | null,
-  slopes: Partial<FundamentalSlopes> = {},
-): { score: number } {
-  let ms = 0;
+/**
+ * Cross-sectional FMS computation.
+ * All tickers are ranked relative to each other per metric×timeframe,
+ * then weighted and multiplied by their 52W price position.
+ */
+export function computeFMSCrossSectional(
+  allSlopes: Map<string, MetricSlopes>,
+  all52wPct: Map<string, number | null>,
+): Map<string, number> {
+  const tickers = [...allSlopes.keys()];
 
-  const ni  = quarters.map((q) => q.netIncome);
-  const ocf = quarters.map((q) => q.ncfoa);
-  const fcf = quarters.map((q) => q.fcf);
-  const rev = quarters.map((q) => q.revenues);
+  // Pre-build sorted value arrays per (metric, timeframe) for ranking
+  const shortUniverse = new Map<string, number[]>();
+  const longUniverse  = new Map<string, number[]>();
 
-  if (last5AllPositive(ni))          ms += 4;
-  if (last5LatestIsHighest(ni))      ms += 3;
-  if (last5AllPositive(ocf))         ms += 4;
-  if (last5LatestIsHighest(ocf))     ms += 3;
-  if (last5AllPositive(fcf))         ms += 4;
-  if (last5LatestIsHighest(fcf))     ms += 3;
-  if (last5AllPositive(rev))         ms += 2;
-  if (last5LatestIsHighest(rev))     ms += 3;
-
-  // 52-week percentile (lower = better, buying near lows)
-  if (w52Pct !== null) {
-    for (const [t, p] of [[5,8],[15,7],[25,6],[35,5],[45,4],[55,3],[65,2],[75,1]] as [number,number][]) {
-      if (w52Pct <= t) { ms += p; break; }
+  for (const m of METRICS) {
+    const sv: number[] = [];
+    const lv: number[] = [];
+    for (const t of tickers) {
+      const s = allSlopes.get(t)!;
+      const sVal = s[`${m.key}_short`];
+      const lVal = s[`${m.key}_long`];
+      if (sVal !== null && isFinite(sVal)) sv.push(m.invert ? -sVal : sVal);
+      if (lVal !== null && isFinite(lVal)) lv.push(m.invert ? -lVal : lVal);
     }
+    shortUniverse.set(m.key, sv);
+    longUniverse.set(m.key, lv);
   }
 
-  // Positive-slope bonuses
-  const posSlopes: [keyof FundamentalSlopes, [number, number][]][] = [
-    ['Rev_Slope_5',                 [[0.30,4],[0.20,3],[0.10,2],[0.05,1]]],
-    ['FCF_Slope_5',                 [[0.40,4],[0.25,3],[0.10,2],[0.05,1]]],
-    ['Return on Equity_Slope_5',    [[0.20,2],[0.10,1]]],
-    ['Net Profit Margin_Slope_5',   [[0.20,2],[0.10,1]]],
-  ];
-  for (const [k, tps] of posSlopes) {
-    const v = slopes[k] ?? null;
-    if (v !== null) {
-      for (const [t, p] of tps) { if (v >= t) { ms += p; break; } }
+  const result = new Map<string, number>();
+
+  for (const ticker of tickers) {
+    const slopes = allSlopes.get(ticker)!;
+    const w52Pct = all52wPct.get(ticker) ?? null;
+    const w52Mult = w52Pct !== null
+      ? 1.0 + 1.5 * (1 - w52Pct / 100)
+      : 1.25;  // missing 52W data → mid-range multiplier
+
+    let weightedSum = 0;
+    let totalWeight = 0;
+
+    for (const m of METRICS) {
+      const tierW = TIER_WEIGHT[m.tier];
+      const sArr  = shortUniverse.get(m.key)!;
+      const lArr  = longUniverse.get(m.key)!;
+
+      const sRaw = slopes[`${m.key}_short`];
+      const lRaw = slopes[`${m.key}_long`];
+
+      if (sRaw !== null && isFinite(sRaw) && sArr.length >= 2) {
+        const rank = percentileRank(m.invert ? -sRaw : sRaw, sArr);
+        weightedSum += rank * tierW * SHORT_WEIGHT;
+        totalWeight += tierW * SHORT_WEIGHT;
+      }
+      if (lRaw !== null && isFinite(lRaw) && lArr.length >= 2) {
+        const rank = percentileRank(m.invert ? -lRaw : lRaw, lArr);
+        weightedSum += rank * tierW * LONG_WEIGHT;
+        totalWeight += tierW * LONG_WEIGHT;
+      }
     }
+
+    const rawScore = totalWeight > 0 ? weightedSum / totalWeight : 0;
+    result.set(ticker, Math.round(rawScore * w52Mult * FMS_SCALE * 10) / 10);
   }
 
-  // Negative-slope bonuses (lower is better)
-  const negSlopes: [keyof FundamentalSlopes, [number, number][]][] = [
-    ['P/E Ratio_Slope_5',            [[-0.25,3],[-0.15,2],[-0.05,1]]],
-    ['Debt to Equity Ratio_Slope_5', [[-0.20,2],[-0.10,1]]],
-  ];
-  for (const [k, tps] of negSlopes) {
-    const v = slopes[k] ?? null;
-    if (v !== null) {
-      for (const [t, p] of tps) { if (v <= t) { ms += p; break; } }
-    }
-  }
-
-  // Free cash flow yield
-  const fcfy = slopes.FCFY ?? null;
-  if (fcfy !== null) {
-    if (fcfy >= 0.15)      ms += 3;
-    else if (fcfy >= 0.10) ms += 2;
-    else if (fcfy >= 0.05) ms += 1;
-  }
-
-  return { score: ms };
+  return result;
 }

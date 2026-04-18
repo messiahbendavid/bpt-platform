@@ -5,27 +5,25 @@ export interface QuarterlyFinancials {
   revenues: number | null;
   netIncome: number | null;
   ncf: number | null;
-  ncfoa: number | null;     // operating CF
-  ncfia: number | null;     // investing CF
-  capex: number | null;     // capital expenditure (positive value)
-  fcf: number | null;       // = ncfoa - capex
+  ncfoa: number | null;
+  ncfia: number | null;
+  capex: number | null;
+  fcf: number | null;
   dilutedEps: number | null;
   totalEquity: number | null;
   totalDebt: number | null;
   sharesOutstanding: number | null;
   operatingIncome: number | null;
+  grossProfit: number | null;
+  cashAndEquivalents: number | null;
+  totalAssets: number | null;
+  totalLiabilities: number | null;
+  shareRepurchases: number | null;  // stored as positive (absolute value of buybacks)
   priceAtPeriod: number | null;
 }
 
-export interface FundamentalSlopes {
-  Rev_Slope_5: number | null;
-  FCF_Slope_5: number | null;
-  'Return on Equity_Slope_5': number | null;
-  'Net Profit Margin_Slope_5': number | null;
-  'P/E Ratio_Slope_5': number | null;
-  'Debt to Equity Ratio_Slope_5': number | null;
-  FCFY: number | null;
-}
+/** Flat map of metric slopes: keys are "{metricKey}_short" and "{metricKey}_long" */
+export type MetricSlopes = Record<string, number | null>;
 
 export interface CorrelationResult {
   ticker: string;

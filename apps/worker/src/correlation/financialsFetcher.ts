@@ -1,12 +1,12 @@
-import type { QuarterlyFinancials, FundamentalSlopes } from '@bpt/shared';
+import type { QuarterlyFinancials, MetricSlopes } from '@bpt/shared';
 import { CACHE_TTL_FINANCIALS_MS } from '@bpt/shared';
 import { supabase } from '../db/supabaseClient.js';
 
 const POLYGON_API_KEY = process.env.POLYGON_API_KEY ?? '';
 const POLY_BASE = 'https://api.polygon.io';
 
-// ── EWM slope (mirrors pandas ewm(span=4).mean()) ──────────────────────────
-function ewmSlope(values: (number | null)[], span = 4): number | null {
+// ── EWM slope: relative change over `lookback` EWM steps ───────────────────
+function ewmSlope(values: (number | null)[], span = 5, lookback = span): number | null {
   const vals = values.filter((v): v is number => v !== null && isFinite(v));
   if (vals.length < 2) return null;
 
@@ -16,9 +16,9 @@ function ewmSlope(values: (number | null)[], span = 4): number | null {
     ewm.push(alpha * vals[i] + (1 - alpha) * ewm[i - 1]);
   }
 
-  const last     = ewm[ewm.length - 1];
-  const lookback = Math.min(5, ewm.length - 1);
-  const ref      = ewm[ewm.length - 1 - lookback];
+  const last = ewm[ewm.length - 1];
+  const lb   = Math.min(lookback, ewm.length - 1);
+  const ref  = ewm[ewm.length - 1 - lb];
   if (ref === 0 || !isFinite(ref)) return null;
   return (last - ref) / Math.abs(ref);
 }
@@ -131,23 +131,35 @@ async function fetchFromPolygon(ticker: string): Promise<QuarterlyFinancials[]> 
     const debt   = bal.long_term_debt?.value ?? null;
     const shares = inc.basic_average_shares?.value ?? inc.weighted_average_shares?.value ?? null;
 
+    // Buybacks: repurchases_of_common_stock is typically negative in Polygon CF
+    const buybackRaw = cf.repurchases_of_common_stock?.value
+                    ?? cf.payments_for_repurchase_of_common_stock?.value
+                    ?? null;
+    const shareRepurchases = buybackRaw !== null ? Math.abs(buybackRaw) : null;
+
     return {
       ticker,
-      periodEndDate:    (r.end_date    as string) ?? '',
-      filingDate:       (r.filing_date as string) ?? null,
-      revenues:         inc.revenues?.value                          ?? null,
-      netIncome:        inc.net_income_loss?.value                   ?? null,
-      ncf:              cf.net_cash_flow?.value                      ?? null,
+      periodEndDate:      (r.end_date    as string) ?? '',
+      filingDate:         (r.filing_date as string) ?? null,
+      revenues:           inc.revenues?.value                                        ?? null,
+      netIncome:          inc.net_income_loss?.value                                 ?? null,
+      ncf:                cf.net_cash_flow?.value                                    ?? null,
       ncfoa,
       ncfia,
       capex,
       fcf,
-      dilutedEps:       inc.diluted_earnings_per_share?.value        ?? null,
-      operatingIncome:  inc.operating_income_loss?.value             ?? null,
-      totalEquity:      equity,
-      totalDebt:        debt,
-      sharesOutstanding: shares !== null ? Math.round(shares) : null,
-      priceAtPeriod:    null,
+      dilutedEps:         inc.diluted_earnings_per_share?.value                      ?? null,
+      operatingIncome:    inc.operating_income_loss?.value                           ?? null,
+      grossProfit:        inc.gross_profit?.value                                    ?? null,
+      cashAndEquivalents: bal.cash_and_cash_equivalents?.value
+                       ?? bal.cash_and_equivalents?.value                            ?? null,
+      totalAssets:        bal.assets?.value                                          ?? null,
+      totalLiabilities:   bal.liabilities?.value                                    ?? null,
+      shareRepurchases,
+      totalEquity:        equity,
+      totalDebt:          debt,
+      sharesOutstanding:  shares !== null ? Math.round(shares) : null,
+      priceAtPeriod:      null,
     } satisfies QuarterlyFinancials;
   });
 }
@@ -183,21 +195,26 @@ export async function fetchQuarterlyData(
           : null);
       return {
         ticker,
-        periodEndDate:     row.period_end_date as string,
-        filingDate:        (row.filing_date        ?? null) as string | null,
-        revenues:          (row.revenues           ?? null) as number | null,
-        netIncome:         (row.net_income         ?? null) as number | null,
-        ncf:               (row.ncf               ?? null) as number | null,
+        periodEndDate:      row.period_end_date as string,
+        filingDate:         (row.filing_date          ?? null) as string | null,
+        revenues:           (row.revenues             ?? null) as number | null,
+        netIncome:          (row.net_income           ?? null) as number | null,
+        ncf:                (row.ncf                 ?? null) as number | null,
         ncfoa,
         ncfia,
         capex,
         fcf,
-        dilutedEps:        (row.diluted_eps       ?? null) as number | null,
-        operatingIncome:   (row.operating_income  ?? null) as number | null,
-        totalEquity:       (row.total_equity      ?? null) as number | null,
-        totalDebt:         (row.total_debt        ?? null) as number | null,
-        sharesOutstanding: (row.shares_outstanding ?? null) as number | null,
-        priceAtPeriod:     (row.price_at_period   ?? null) as number | null,
+        dilutedEps:         (row.diluted_eps         ?? null) as number | null,
+        operatingIncome:    (row.operating_income    ?? null) as number | null,
+        grossProfit:        (row.gross_profit        ?? null) as number | null,
+        cashAndEquivalents: (row.cash_and_equivalents ?? null) as number | null,
+        totalAssets:        (row.total_assets        ?? null) as number | null,
+        totalLiabilities:   (row.total_liabilities   ?? null) as number | null,
+        shareRepurchases:   (row.share_repurchases   ?? null) as number | null,
+        totalEquity:        (row.total_equity        ?? null) as number | null,
+        totalDebt:          (row.total_debt          ?? null) as number | null,
+        sharesOutstanding:  (row.shares_outstanding  ?? null) as number | null,
+        priceAtPeriod:      (row.price_at_period     ?? null) as number | null,
       };
     });
   }
@@ -223,23 +240,28 @@ export async function fetchQuarterlyData(
 
 
   const rows = fresh.map((q) => ({
-    symbol_id:          symbolId,
-    ticker:             q.ticker,
-    period_end_date:    q.periodEndDate,
-    filing_date:        q.filingDate,
-    revenues:           q.revenues,
-    net_income:         q.netIncome,
-    ncf:                q.ncf,
-    ncfoa:              q.ncfoa,
-    ncfia:              q.ncfia,
-    capex:              q.capex,
-    fcf:                q.fcf,
-    diluted_eps:        q.dilutedEps,
-    operating_income:   q.operatingIncome,
-    total_equity:       q.totalEquity,
-    total_debt:         q.totalDebt,
-    shares_outstanding: q.sharesOutstanding,
-    price_at_period:    q.priceAtPeriod,
+    symbol_id:            symbolId,
+    ticker:               q.ticker,
+    period_end_date:      q.periodEndDate,
+    filing_date:          q.filingDate,
+    revenues:             q.revenues,
+    net_income:           q.netIncome,
+    ncf:                  q.ncf,
+    ncfoa:                q.ncfoa,
+    ncfia:                q.ncfia,
+    capex:                q.capex,
+    fcf:                  q.fcf,
+    diluted_eps:          q.dilutedEps,
+    operating_income:     q.operatingIncome,
+    gross_profit:         q.grossProfit,
+    cash_and_equivalents: q.cashAndEquivalents,
+    total_assets:         q.totalAssets,
+    total_liabilities:    q.totalLiabilities,
+    share_repurchases:    q.shareRepurchases,
+    total_equity:         q.totalEquity,
+    total_debt:           q.totalDebt,
+    shares_outstanding:   q.sharesOutstanding,
+    price_at_period:      q.priceAtPeriod,
   }));
 
   await supabase
@@ -249,43 +271,91 @@ export async function fetchQuarterlyData(
   return fresh;
 }
 
-// ── Compute EWM slopes from quarters (sorted oldest→newest) ───────────────
-export function computeSlopes(quarters: QuarterlyFinancials[]): FundamentalSlopes {
+export interface MetricSlopesResult {
+  slopes: MetricSlopes;
+  currentFCFY: number | null;
+}
+
+// ── Compute EWM slopes for all 20 FMS metrics (sorted oldest→newest) ────────
+export function computeMetricSlopes(quarters: QuarterlyFinancials[]): MetricSlopesResult {
   const sorted = [...quarters].sort(
     (a, b) => new Date(a.periodEndDate).getTime() - new Date(b.periodEndDate).getTime(),
   );
 
-  const rev = sorted.map((q) => q.revenues);
-  const fcf = sorted.map((q) => q.fcf);
-  const ni  = sorted.map((q) => q.netIncome);
-  const eq  = sorted.map((q) => q.totalEquity);
-  const eps = sorted.map((q) => q.dilutedEps);
-  const pr  = sorted.map((q) => q.priceAtPeriod);
-  const dbt = sorted.map((q) => q.totalDebt);
+  const rev     = sorted.map((q) => q.revenues);
+  const ni      = sorted.map((q) => q.netIncome);
+  const ocf     = sorted.map((q) => q.ncfoa);
+  const fcf     = sorted.map((q) => q.fcf);
+  const oi      = sorted.map((q) => q.operatingIncome);
+  const gp      = sorted.map((q) => q.grossProfit);
+  const cash    = sorted.map((q) => q.cashAndEquivalents);
+  const assets  = sorted.map((q) => q.totalAssets);
+  const equity  = sorted.map((q) => q.totalEquity);
+  const liab    = sorted.map((q) => q.totalLiabilities);
+  const buyback = sorted.map((q) => q.shareRepurchases);
+  const eps     = sorted.map((q) => q.dilutedEps);
+  const pr      = sorted.map((q) => q.priceAtPeriod);
+  const dbt     = sorted.map((q) => q.totalDebt);
+  const shrs    = sorted.map((q) => q.sharesOutstanding);
 
-  const roe: (number | null)[] = ni.map((n, i) =>
-    n !== null && eq[i] !== null && eq[i]! !== 0 ? n / eq[i]! : null);
+  // Derived series
+  const fcfyVals: (number | null)[] = sorted.map((q) => {
+    const mktCap = q.priceAtPeriod !== null && q.sharesOutstanding !== null
+      ? q.priceAtPeriod * q.sharesOutstanding : null;
+    return mktCap && mktCap > 0 && q.fcf !== null ? q.fcf / mktCap : null;
+  });
   const npm: (number | null)[] = ni.map((n, i) =>
     n !== null && rev[i] !== null && rev[i]! !== 0 ? n / rev[i]! : null);
+  const roe: (number | null)[] = ni.map((n, i) =>
+    n !== null && equity[i] !== null && equity[i]! !== 0 ? n / equity[i]! : null);
+  const gm: (number | null)[] = gp.map((g, i) =>
+    g !== null && rev[i] !== null && rev[i]! !== 0 ? g / rev[i]! : null);
+  const om: (number | null)[] = oi.map((o, i) =>
+    o !== null && rev[i] !== null && rev[i]! !== 0 ? o / rev[i]! : null);
   const pe: (number | null)[] = pr.map((p, i) =>
     p !== null && eps[i] !== null && eps[i]! !== 0 ? p / eps[i]! : null);
   const de: (number | null)[] = dbt.map((d, i) =>
-    d !== null && eq[i] !== null && eq[i]! !== 0 ? d / eq[i]! : null);
-
-  const fcfyVals: (number | null)[] = sorted.map((q) => {
-    if (!q.fcf || !q.priceAtPeriod || !q.sharesOutstanding) return null;
-    const mktCap = q.priceAtPeriod * q.sharesOutstanding;
-    return mktCap > 0 ? q.fcf / mktCap : null;
+    d !== null && equity[i] !== null && equity[i]! !== 0 ? d / equity[i]! : null);
+  const pb: (number | null)[] = pr.map((p, i) => {
+    const bvps = equity[i] !== null && shrs[i] !== null && shrs[i]! !== 0
+      ? equity[i]! / shrs[i]! : null;
+    return p !== null && bvps !== null && bvps !== 0 ? p / bvps : null;
   });
-  const fcfyCurrent = [...fcfyVals].reverse().find((v) => v !== null) ?? null;
+  const ps: (number | null)[] = pr.map((p, i) => {
+    const mktCap = p !== null && shrs[i] !== null ? p * shrs[i]! : null;
+    return mktCap !== null && rev[i] !== null && rev[i]! !== 0 ? mktCap / rev[i]! : null;
+  });
 
-  return {
-    Rev_Slope_5:                    ewmSlope(rev),
-    FCF_Slope_5:                    ewmSlope(fcf),
-    'Return on Equity_Slope_5':     ewmSlope(roe),
-    'Net Profit Margin_Slope_5':    ewmSlope(npm),
-    'P/E Ratio_Slope_5':            ewmSlope(pe),
-    'Debt to Equity Ratio_Slope_5': ewmSlope(de),
-    FCFY:                           fcfyCurrent,
-  };
+  const series: [string, (number | null)[]][] = [
+    ['rev',     rev],
+    ['ni',      ni],
+    ['ocf',     ocf],
+    ['fcf',     fcf],
+    ['fcfy',    fcfyVals],
+    ['oi',      oi],
+    ['gp',      gp],
+    ['npm',     npm],
+    ['roe',     roe],
+    ['gm',      gm],
+    ['buyback', buyback],
+    ['cash',    cash],
+    ['om',      om],
+    ['pe',      pe],
+    ['de',      de],
+    ['pb',      pb],
+    ['ps',      ps],
+    ['assets',  assets],
+    ['equity',  equity],
+    ['liab',    liab],
+  ];
+
+  const slopes: MetricSlopes = {};
+  for (const [key, vals] of series) {
+    slopes[`${key}_short`] = ewmSlope(vals, 5,  5);
+    slopes[`${key}_long`]  = ewmSlope(vals, 20, 20);
+  }
+
+  const currentFCFY = [...fcfyVals].reverse().find((v) => v !== null) ?? null;
+
+  return { slopes, currentFCFY };
 }
