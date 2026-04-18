@@ -5,7 +5,7 @@
   "packageManager": "pnpm@9.0.0",
   "scripts": {
     "dev": "turbo run dev",
-    "build": "turbo run build",
+    "build": "pnpm --filter @bpt/shared build && pnpm --filter @bpt/web build",
     "lint": "turbo run lint",
     "typecheck": "turbo run typecheck",
     "worker": "pnpm --filter @bpt/worker dev",
