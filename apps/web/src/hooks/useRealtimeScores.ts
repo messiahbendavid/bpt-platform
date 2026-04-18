@@ -19,6 +19,7 @@ function rowToMeritScore(r: DbRow): MeritScore {
     smsTotal:          (r.sms_total          as number) ?? 0,
 
     fmsTotal:          (r.fms_total   as number) ?? 0,
+    fmsRanks:          (r.fms_ranks   as Record<string, number | null> | null) ?? null,
     cmsTotal:          (r.cms_total   as number) ?? 0,
     tms:               (r.tms         as number) ?? 0,
 

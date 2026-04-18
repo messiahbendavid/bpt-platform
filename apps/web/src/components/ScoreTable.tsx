@@ -75,9 +75,13 @@ function rowBg(row: MeritScore): string {
   return 'transparent';
 }
 
-interface Props { data: MeritScore[] }
+interface Props {
+  data: MeritScore[];
+  selectedTicker?: string | null;
+  onRowClick?: (ticker: string) => void;
+}
 
-export function ScoreTable({ data }: Props) {
+export function ScoreTable({ data, selectedTicker, onRowClick }: Props) {
   const [sorting, setSorting] = useState<SortingState>([{ id: 'tms', desc: true }]);
 
   const table = useReactTable({
@@ -117,18 +121,27 @@ export function ScoreTable({ data }: Props) {
           ))}
         </thead>
         <tbody>
-          {table.getRowModel().rows.map((row) => (
-            <tr
-              key={row.id}
-              style={{ background: rowBg(row.original), borderBottom: '1px solid #1a1a1a' }}
-            >
-              {row.getVisibleCells().map((cell) => (
-                <td key={cell.id} style={{ padding: '3px 6px', color: '#ddd', whiteSpace: 'nowrap' }}>
-                  {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                </td>
-              ))}
-            </tr>
-          ))}
+          {table.getRowModel().rows.map((row) => {
+            const isSelected = row.original.ticker === selectedTicker;
+            return (
+              <tr
+                key={row.id}
+                onClick={() => onRowClick?.(row.original.ticker)}
+                style={{
+                  background: isSelected ? '#1e2a1e' : rowBg(row.original),
+                  borderBottom: '1px solid #1a1a1a',
+                  cursor: onRowClick ? 'pointer' : 'default',
+                  outline: isSelected ? '1px solid #4caf50' : 'none',
+                }}
+              >
+                {row.getVisibleCells().map((cell) => (
+                  <td key={cell.id} style={{ padding: '3px 6px', color: '#ddd', whiteSpace: 'nowrap' }}>
+                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                  </td>
+                ))}
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>

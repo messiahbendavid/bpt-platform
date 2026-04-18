@@ -46,6 +46,11 @@ function percentileRank(value: number, universe: number[]): number {
   return below / universe.length;
 }
 
+export interface FMSResult {
+  score: number;
+  ranks: Record<string, number | null>;  // {metric}_short / {metric}_long → 0-1 percentile rank
+}
+
 /**
  * Cross-sectional FMS computation.
  * All tickers are ranked relative to each other per metric×timeframe,
@@ -54,7 +59,7 @@ function percentileRank(value: number, universe: number[]): number {
 export function computeFMSCrossSectional(
   allSlopes: Map<string, MetricSlopes>,
   all52wPct: Map<string, number | null>,
-): Map<string, number> {
+): Map<string, FMSResult> {
   const tickers = [...allSlopes.keys()];
 
   // Pre-build sorted value arrays per (metric, timeframe) for ranking
@@ -75,17 +80,18 @@ export function computeFMSCrossSectional(
     longUniverse.set(m.key, lv);
   }
 
-  const result = new Map<string, number>();
+  const result = new Map<string, FMSResult>();
 
   for (const ticker of tickers) {
     const slopes = allSlopes.get(ticker)!;
     const w52Pct = all52wPct.get(ticker) ?? null;
     const w52Mult = w52Pct !== null
       ? 1.0 + 1.5 * (1 - w52Pct / 100)
-      : 1.25;  // missing 52W data → mid-range multiplier
+      : 1.25;
 
     let weightedSum = 0;
     let totalWeight = 0;
+    const ranks: Record<string, number | null> = {};
 
     for (const m of METRICS) {
       const tierW = TIER_WEIGHT[m.tier];
@@ -97,18 +103,28 @@ export function computeFMSCrossSectional(
 
       if (sRaw !== null && isFinite(sRaw) && sArr.length >= 2) {
         const rank = percentileRank(m.invert ? -sRaw : sRaw, sArr);
+        ranks[`${m.key}_short`] = Math.round(rank * 1000) / 1000;
         weightedSum += rank * tierW * SHORT_WEIGHT;
         totalWeight += tierW * SHORT_WEIGHT;
+      } else {
+        ranks[`${m.key}_short`] = null;
       }
+
       if (lRaw !== null && isFinite(lRaw) && lArr.length >= 2) {
         const rank = percentileRank(m.invert ? -lRaw : lRaw, lArr);
+        ranks[`${m.key}_long`] = Math.round(rank * 1000) / 1000;
         weightedSum += rank * tierW * LONG_WEIGHT;
         totalWeight += tierW * LONG_WEIGHT;
+      } else {
+        ranks[`${m.key}_long`] = null;
       }
     }
 
     const rawScore = totalWeight > 0 ? weightedSum / totalWeight : 0;
-    result.set(ticker, Math.round(rawScore * w52Mult * FMS_SCALE * 10) / 10);
+    result.set(ticker, {
+      score: Math.round(rawScore * w52Mult * FMS_SCALE * 10) / 10,
+      ranks,
+    });
   }
 
   return result;

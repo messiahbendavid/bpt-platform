@@ -1,0 +1,2 @@
+ALTER TABLE merit_scores
+  ADD COLUMN IF NOT EXISTS fms_ranks JSONB;

@@ -98,7 +98,9 @@ export async function runCorrelationPipeline(
     [...gathered.values()].map((d) =>
       limit(async () => {
         try {
-          const fms    = fmsMap.get(d.ticker) ?? 0;
+          const fmsResult = fmsMap.get(d.ticker);
+          const fms       = fmsResult?.score ?? 0;
+          const fmsRanks  = fmsResult?.ranks ?? null;
           const result = d.corrResult;
           const now    = new Date().toISOString();
 
@@ -140,6 +142,7 @@ export async function runCorrelationPipeline(
               price_52w_pct:      d.price52wPct,
               fms_52w_percentile: d.price52wPct,
               fms_total:          fms,
+              fms_ranks:          fmsRanks,
               rev_slope_5:        d.slopes['rev_short']  ?? null,
               fcf_slope_5:        d.slopes['fcf_short']  ?? null,
               fcfy:               d.currentFCFY,

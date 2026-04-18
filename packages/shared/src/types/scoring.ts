@@ -14,6 +14,7 @@ export interface MeritScore {
 
   // Fundamental Merit Score
   fmsTotal: number;
+  fmsRanks: Record<string, number | null> | null;  // per-metric percentile ranks (0-1)
 
   // Correlation Merit Score
   cmsTotal: number;
