@@ -22,10 +22,18 @@ export function getAllLatestPrices(): Map<string, number> {
   return latestPrices;
 }
 
+let totalFlushed = 0;
+let flushCount = 0;
+
 export async function flushToDatabase(symbolIdMap: Map<string, string>): Promise<void> {
-  if (pendingTicks.length === 0) return;
+  if (pendingTicks.length === 0) {
+    if (flushCount % 30 === 0) console.log(`[priceBuffer] No ticks pending. latestPrices has ${latestPrices.size} symbols.`);
+    flushCount++;
+    return;
+  }
 
   const batch = pendingTicks.splice(0, pendingTicks.length);
+  console.log(`[priceBuffer] Flushing ${batch.length} ticks...`);
 
   const rows = batch
     .map((t) => {
@@ -40,12 +48,17 @@ export async function flushToDatabase(symbolIdMap: Map<string, string>): Promise
     })
     .filter((r): r is NonNullable<typeof r> => r !== null);
 
-  if (rows.length === 0) return;
+  if (rows.length === 0) {
+    console.warn(`[priceBuffer] ${batch.length} ticks had no matching symbol_id in map (map size: ${symbolIdMap.size})`);
+    return;
+  }
 
   const { error } = await supabase.from('price_ticks').insert(rows);
   if (error) {
-    console.error('[priceBuffer] flush error:', error.message);
-    // Re-queue failed ticks for next flush
+    console.error('[priceBuffer] flush error:', error.message, error.details ?? '');
     pendingTicks.unshift(...batch);
+  } else {
+    totalFlushed += rows.length;
+    console.log(`[priceBuffer] Flushed ${rows.length} rows OK (total: ${totalFlushed})`);
   }
 }
