@@ -1,0 +1,13 @@
+export const BAND_MULTIPLIERS: readonly number[] = [
+  0.003333, 0.006666, 0.009999, 0.013332, 0.016665,
+  0.019998, 0.023331, 0.026664, 0.029997, 0.033330,
+  0.036663, 0.039996, 0.043329, 0.046662,
+] as const;
+
+export const SPOTLIGHT_MIN = 5;
+export const SPOTLIGHT_MAX = 15;
+export const LOOKBACK_DAYS = 5;
+export const TICK_INTERVAL_MS = 1000;
+export const CORRELATION_REFRESH_INTERVAL_MS = 15 * 60 * 1000;
+export const CACHE_TTL_FINANCIALS_MS = 24 * 60 * 60 * 1000;
+export const MIN_TMS_DELTA_TO_UPSERT = 0.001;
