@@ -3,6 +3,7 @@ import { CACHE_TTL_FINANCIALS_MS } from '@bpt/shared';
 import { supabase } from '../db/supabaseClient.js';
 
 const POLYGON_API_KEY = process.env.POLYGON_API_KEY ?? '';
+const POLY_BASE = 'https://api.polygon.io';
 
 // ── EWM slope (mirrors pandas ewm(span=4).mean()) ──────────────────────────
 function ewmSlope(values: (number | null)[], span = 4): number | null {
@@ -15,49 +16,74 @@ function ewmSlope(values: (number | null)[], span = 4): number | null {
     ewm.push(alpha * vals[i] + (1 - alpha) * ewm[i - 1]);
   }
 
-  const last    = ewm[ewm.length - 1];
+  const last     = ewm[ewm.length - 1];
   const lookback = Math.min(5, ewm.length - 1);
   const ref      = ewm[ewm.length - 1 - lookback];
   if (ref === 0 || !isFinite(ref)) return null;
   return (last - ref) / Math.abs(ref);
 }
 
-// ── Fetch one closing price near a given date ──────────────────────────────
-async function priceNear(ticker: string, dateStr: string): Promise<number | null> {
-  const target = new Date(dateStr);
-  const from = new Date(target.getTime() - 7 * 86_400_000).toISOString().slice(0, 10);
-  const to   = new Date(target.getTime() + 7 * 86_400_000).toISOString().slice(0, 10);
+// ── Fetch 3 years of daily closes in ONE call, return date→close map ────────
+async function fetchDailyCloses(ticker: string): Promise<Map<string, number>> {
+  const map = new Map<string, number>();
 
-  // Try our DB first (fast path for recent dates)
-  const { data } = await supabase
+  // 1. Try our DB (has recent data from restBackfill)
+  const since = new Date(Date.now() - 3 * 365 * 86_400_000).toISOString().slice(0, 10);
+  const { data: dbRows } = await supabase
     .from('historical_prices')
-    .select('close_price')
+    .select('trade_date, close_price')
     .eq('ticker', ticker)
-    .gte('trade_date', from)
-    .lte('trade_date', to)
-    .order('trade_date', { ascending: false })
-    .limit(1);
+    .gte('trade_date', since);
 
-  if (data?.[0]?.close_price != null) return data[0].close_price as number;
-
-  // Fall back to Polygon daily aggregates for historical dates
-  try {
-    const url =
-      `https://api.polygon.io/v2/aggs/ticker/${ticker}/range/1/day/${from}/${to}` +
-      `?sort=desc&limit=1&apiKey=${POLYGON_API_KEY}`;
-    const res = await fetch(url);
-    if (!res.ok) return null;
-    const json = (await res.json()) as { results?: Array<{ c: number }> };
-    return json.results?.[0]?.c ?? null;
-  } catch {
-    return null;
+  for (const r of dbRows ?? []) {
+    if (r.close_price != null) map.set(r.trade_date as string, r.close_price as number);
   }
+
+  // 2. Always supplement with Polygon (one call gets everything)
+  try {
+    const to   = new Date().toISOString().slice(0, 10);
+    const url  =
+      `${POLY_BASE}/v2/aggs/ticker/${ticker}/range/1/day/${since}/${to}` +
+      `?adjusted=true&sort=asc&limit=1000&apiKey=${POLYGON_API_KEY}`;
+    const res  = await fetch(url);
+    if (res.ok) {
+      const json = (await res.json()) as { results?: Array<{ t: number; c: number }> };
+      for (const bar of json.results ?? []) {
+        const date = new Date(bar.t).toISOString().slice(0, 10);
+        map.set(date, bar.c);
+      }
+    } else {
+      console.warn(`[financials] daily closes ${ticker}: HTTP ${res.status}`);
+    }
+  } catch (err) {
+    console.warn(`[financials] daily closes ${ticker}:`, (err as Error).message);
+  }
+
+  return map;
+}
+
+// ── Find closest trading day price within ±7 days ──────────────────────────
+function closestPrice(dateStr: string, closes: Map<string, number>): number | null {
+  if (closes.has(dateStr)) return closes.get(dateStr)!;
+
+  const target = new Date(dateStr).getTime();
+  let best: number | null = null;
+  let bestDiff = Infinity;
+
+  for (const [d, price] of closes) {
+    const diff = Math.abs(new Date(d).getTime() - target);
+    if (diff < bestDiff && diff <= 7 * 86_400_000) {
+      bestDiff = diff;
+      best = price;
+    }
+  }
+  return best;
 }
 
 // ── Pull raw financials from Polygon vX ────────────────────────────────────
 async function fetchFromPolygon(ticker: string): Promise<QuarterlyFinancials[]> {
   const url =
-    `https://api.polygon.io/vX/reference/financials` +
+    `${POLY_BASE}/vX/reference/financials` +
     `?ticker=${ticker}&timeframe=quarterly&limit=24&apiKey=${POLYGON_API_KEY}`;
 
   const res = await fetch(url);
@@ -67,45 +93,37 @@ async function fetchFromPolygon(ticker: string): Promise<QuarterlyFinancials[]> 
 
   return (json.results ?? []).map((r) => {
     type Stmt = Record<string, { value?: number } | undefined>;
-    const fin  = (r.financials ?? {}) as Record<string, Stmt>;
-    const inc  = fin.income_statement  ?? {};
-    const cf   = fin.cash_flow_statement ?? {};
-    const bal  = fin.balance_sheet     ?? {};
+    const fin = (r.financials ?? {}) as Record<string, Stmt>;
+    const inc = fin.income_statement    ?? {};
+    const cf  = fin.cash_flow_statement ?? {};
+    const bal = fin.balance_sheet       ?? {};
 
-    const ncfoa   = cf.net_cash_flow_from_operating_activities?.value   ?? null;
-    const ncfia   = cf.net_cash_flow_from_investing_activities?.value   ?? null;
-    // capex is negative in Polygon; store as positive magnitude
+    const ncfoa    = cf.net_cash_flow_from_operating_activities?.value ?? null;
     const capexRaw = cf.capital_expenditure?.value ?? null;
     const capex    = capexRaw !== null ? Math.abs(capexRaw) : null;
     const fcf      = ncfoa !== null && capex !== null ? ncfoa - capex : null;
 
-    const equity = bal.equity_attributable_to_parent?.value
-                ?? bal.equity?.value
-                ?? null;
+    const equity = bal.equity_attributable_to_parent?.value ?? bal.equity?.value ?? null;
     const debt   = bal.long_term_debt?.value ?? null;
-
-    const shares = (inc.basic_average_shares?.value
-                 ?? inc.weighted_average_shares?.value
-                 ?? null);
-    const shares_ = shares !== null ? Math.round(shares) : null;
+    const shares = inc.basic_average_shares?.value ?? inc.weighted_average_shares?.value ?? null;
 
     return {
       ticker,
-      periodEndDate:   (r.end_date    as string) ?? '',
-      filingDate:      (r.filing_date as string) ?? null,
-      revenues:        inc.revenues?.value                              ?? null,
-      netIncome:       inc.net_income_loss?.value                       ?? null,
-      ncf:             cf.net_cash_flow?.value                          ?? null,
+      periodEndDate:    (r.end_date    as string) ?? '',
+      filingDate:       (r.filing_date as string) ?? null,
+      revenues:         inc.revenues?.value                          ?? null,
+      netIncome:        inc.net_income_loss?.value                   ?? null,
+      ncf:              cf.net_cash_flow?.value                      ?? null,
       ncfoa,
-      ncfia,
+      ncfia:            cf.net_cash_flow_from_investing_activities?.value ?? null,
       capex,
       fcf,
-      dilutedEps:      inc.diluted_earnings_per_share?.value            ?? null,
-      operatingIncome: inc.operating_income_loss?.value                 ?? null,
-      totalEquity:     equity,
-      totalDebt:       debt,
-      sharesOutstanding: shares_,
-      priceAtPeriod:   null,
+      dilutedEps:       inc.diluted_earnings_per_share?.value        ?? null,
+      operatingIncome:  inc.operating_income_loss?.value             ?? null,
+      totalEquity:      equity,
+      totalDebt:        debt,
+      sharesOutstanding: shares !== null ? Math.round(shares) : null,
+      priceAtPeriod:    null,
     } satisfies QuarterlyFinancials;
   });
 }
@@ -125,8 +143,10 @@ export async function fetchQuarterlyData(
     .order('period_end_date', { ascending: false })
     .limit(24);
 
-  if (cached && cached.length > 0) {
-    return cached.map((row) => ({
+  // If cached AND prices are present, return immediately
+  const cachedWithPrices = (cached ?? []).filter((r) => r.price_at_period != null);
+  if (cachedWithPrices.length >= 4) {
+    return (cached ?? []).map((row) => ({
       ticker,
       periodEndDate:     row.period_end_date,
       filingDate:        row.filing_date        ?? null,
@@ -146,14 +166,24 @@ export async function fetchQuarterlyData(
     }));
   }
 
-  const fresh = await fetchFromPolygon(ticker);
+  // Fetch financials + 3 years of daily closes (2 API calls total per ticker)
+  const [fresh, closes] = await Promise.all([
+    fetchFromPolygon(ticker),
+    fetchDailyCloses(ticker),
+  ]);
+
   if (fresh.length === 0) return [];
 
-  // Align price to each quarter's filing date (or period_end_date as fallback)
+  console.log(`[financials] ${ticker}: ${fresh.length} quarters, ${closes.size} daily closes`);
+
+  // Align price to each quarter's filing date
   for (const q of fresh) {
     const dateStr = q.filingDate ?? q.periodEndDate;
-    q.priceAtPeriod = await priceNear(ticker, dateStr);
+    q.priceAtPeriod = closestPrice(dateStr, closes);
   }
+
+  const pricesFound = fresh.filter((q) => q.priceAtPeriod !== null).length;
+  console.log(`[financials] ${ticker}: ${pricesFound}/${fresh.length} quarters have priceAtPeriod`);
 
   const rows = fresh.map((q) => ({
     symbol_id:          symbolId,
@@ -184,7 +214,6 @@ export async function fetchQuarterlyData(
 
 // ── Compute EWM slopes from quarters (sorted oldest→newest) ───────────────
 export function computeSlopes(quarters: QuarterlyFinancials[]): FundamentalSlopes {
-  // Ensure chronological order (oldest first)
   const sorted = [...quarters].sort(
     (a, b) => new Date(a.periodEndDate).getTime() - new Date(b.periodEndDate).getTime(),
   );
@@ -193,38 +222,24 @@ export function computeSlopes(quarters: QuarterlyFinancials[]): FundamentalSlope
   const fcf = sorted.map((q) => q.fcf);
   const ni  = sorted.map((q) => q.netIncome);
   const eq  = sorted.map((q) => q.totalEquity);
-  const oe  = sorted.map((q) => q.operatingIncome);
   const eps = sorted.map((q) => q.dilutedEps);
   const pr  = sorted.map((q) => q.priceAtPeriod);
   const dbt = sorted.map((q) => q.totalDebt);
 
-  // Ratio series
   const roe: (number | null)[] = ni.map((n, i) =>
-    n !== null && eq[i] !== null && eq[i]! !== 0 ? n / eq[i]! : null,
-  );
+    n !== null && eq[i] !== null && eq[i]! !== 0 ? n / eq[i]! : null);
   const npm: (number | null)[] = ni.map((n, i) =>
-    n !== null && rev[i] !== null && rev[i]! !== 0 ? n / rev[i]! : null,
-  );
+    n !== null && rev[i] !== null && rev[i]! !== 0 ? n / rev[i]! : null);
   const pe: (number | null)[] = pr.map((p, i) =>
-    p !== null && eps[i] !== null && eps[i]! !== 0 ? p / eps[i]! : null,
-  );
+    p !== null && eps[i] !== null && eps[i]! !== 0 ? p / eps[i]! : null);
   const de: (number | null)[] = dbt.map((d, i) =>
-    d !== null && eq[i] !== null && eq[i]! !== 0 ? d / eq[i]! : null,
-  );
+    d !== null && eq[i] !== null && eq[i]! !== 0 ? d / eq[i]! : null);
 
-  // FCFY: FCF / market_cap = FCF / (price * shares)
   const fcfyVals: (number | null)[] = sorted.map((q) => {
-    if (
-      q.fcf === null ||
-      q.priceAtPeriod === null ||
-      q.sharesOutstanding === null ||
-      q.priceAtPeriod <= 0 ||
-      q.sharesOutstanding <= 0
-    ) return null;
+    if (!q.fcf || !q.priceAtPeriod || !q.sharesOutstanding) return null;
     const mktCap = q.priceAtPeriod * q.sharesOutstanding;
     return mktCap > 0 ? q.fcf / mktCap : null;
   });
-  // Use latest non-null FCFY
   const fcfyCurrent = [...fcfyVals].reverse().find((v) => v !== null) ?? null;
 
   return {
