@@ -26,18 +26,16 @@ export async function runCorrelationPipeline(
           if (!result) return;
 
           await supabase.from('correlation_scores').insert({
-            symbol_id:          sym.id,
-            ticker:             result.ticker,
-            rev_corr:           result.revCorr,
-            rev_corr_current:   result.revCorrCurrent,
-            rev_corr_diff:      result.revCorrDiff,
-            deps_corr:          result.depsCorr,
-            deps_corr_current:  result.depsCorrCurrent,
-            deps_corr_diff:     result.depsCorrDiff,
-            diff_sum:           result.diffSum,
-            is_decorrelating:   result.isDecorrelating,
-            quarters_used:      result.quartersUsed,
-            computed_at:        result.computedAt,
+            symbol_id:               sym.id,
+            ticker:                  result.ticker,
+            rev_corr:                result.revCorr,
+            rev_corr_current:        result.revCorrCurrent,
+            rev_corr_diff:           result.revCorrDiff,
+            decorr_score:            result.decorrScore,
+            price_vs_rev_divergence: result.priceVsRevDivergence,
+            is_decorrelating:        result.isDecorrelating,
+            quarters_used:           result.quartersUsed,
+            computed_at:             result.computedAt,
           });
         } catch (err) {
           console.error(`[correlation] ${sym.ticker}:`, (err as Error).message);

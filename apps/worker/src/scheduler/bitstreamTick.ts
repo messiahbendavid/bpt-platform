@@ -5,7 +5,7 @@ import { Bitstream } from '../bitstream/Bitstream.js';
 import { calculateSMS } from '../scoring/sms.js';
 import { calculateFMS } from '../scoring/fms.js';
 import { calculateCMS } from '../scoring/cms.js';
-import { fetchQuarterlyData } from '../correlation/financialsFetcher.js';
+import { fetchQuarterlyData, computeSlopes } from '../correlation/financialsFetcher.js';
 import type { QuarterlyFinancials } from '@bpt/shared';
 
 interface SymbolRecord {
@@ -28,7 +28,6 @@ function key(ticker: string, threshold: number): string {
   return `${ticker}::${threshold}`;
 }
 
-/** Initialise or return existing Bitstream for a symbol+threshold */
 function getBitstream(ticker: string, threshold: number, price: number, volume: number): Bitstream {
   const k = key(ticker, threshold);
   if (!bitstreamStore.has(k)) {
@@ -37,7 +36,6 @@ function getBitstream(ticker: string, threshold: number, price: number, volume: 
   return bitstreamStore.get(k)!;
 }
 
-/** Feed historical minute bars into all bitstreams for a symbol on startup */
 export async function backfillBitstreams(
   symbols: SymbolRecord[],
   historicalBars: Map<string, Array<{ price: number; timestamp: Date }>>,
@@ -81,7 +79,13 @@ function percentile52w(price: number, low: number, high: number): number | null 
   return ((price - low) / range) * 100;
 }
 
-/** Main tick — called every second. Feed latest prices into bitstreams and upsert best merit scores. */
+function formatDuration(seconds: number): string {
+  const h = Math.floor(seconds / 3600);
+  const m = Math.floor((seconds % 3600) / 60);
+  if (h > 0) return `${h}h ${m}m`;
+  return `${m}m`;
+}
+
 export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> {
   const latestPrices = getAllLatestPrices();
   if (latestPrices.size === 0) return;
@@ -116,43 +120,68 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
     const [meta52w, quarters, corrRow, priorScore] = await Promise.all([
       fetch52w(sym.ticker),
       sym.instrument_type === 'equity'
-        ? (quartersCache.get(sym.ticker) ?? fetchQuarterlyData(sym.ticker, sym.id).then((q) => { quartersCache.set(sym.ticker, q); return q; }))
+        ? (quartersCache.get(sym.ticker) ??
+            fetchQuarterlyData(sym.ticker, sym.id).then((q) => {
+              quartersCache.set(sym.ticker, q);
+              return q;
+            }))
         : Promise.resolve([]),
-      supabase.from('correlation_scores').select('*').eq('ticker', sym.ticker).order('computed_at', { ascending: false }).limit(1).maybeSingle(),
-      supabase.from('merit_scores').select('tms').eq('ticker', sym.ticker).maybeSingle(),
+      supabase
+        .from('correlation_scores')
+        .select('rev_corr,rev_corr_current,rev_corr_diff,decorr_score,price_vs_rev_divergence,is_decorrelating')
+        .eq('ticker', sym.ticker)
+        .order('computed_at', { ascending: false })
+        .limit(1)
+        .maybeSingle(),
+      supabase
+        .from('merit_scores')
+        .select('tms')
+        .eq('ticker', sym.ticker)
+        .maybeSingle(),
     ]);
 
     const w52Pct = meta52w ? percentile52w(price, meta52w.low, meta52w.high) : null;
 
-    const sms = calculateSMS(bestSnap);
-    const { score: fms } = calculateFMS(quarters, w52Pct);
+    const slopes  = quarters.length > 0 ? computeSlopes(quarters) : {};
+    const sms     = calculateSMS(bestSnap);
+    const { score: fms } = calculateFMS(quarters, w52Pct, slopes);
 
-    const corrData = corrRow.data ? {
-      corrAtEarnings:       corrRow.data.rev_corr,
-      corrNow:              corrRow.data.rev_corr_current,
-      corrDelta:            corrRow.data.rev_corr_diff,
-      decorrelationScore:   Math.abs(corrRow.data.diff_sum ?? 0),
-      priceVsRevDivergence: corrRow.data.is_decorrelating
-        ? (corrRow.data.rev_corr_diff < 0 ? 'PRICE_AHEAD' as const : 'PRICE_BEHIND' as const)
-        : null,
+    const cd = corrRow.data;
+    const corrData = cd ? {
+      corrAtEarnings:       cd.rev_corr            ?? null,
+      corrNow:              cd.rev_corr_current     ?? null,
+      corrDelta:            cd.rev_corr_diff        ?? null,
+      decorrelationScore:   cd.decorr_score         ?? null,
+      priceVsRevDivergence: (cd.price_vs_rev_divergence as 'PRICE_AHEAD' | 'PRICE_BEHIND' | null) ?? null,
     } : null;
 
     const { score: cms } = calculateCMS(corrData, bestSnap.direction);
     const tms = sms + fms + cms;
 
-    if (priorScore.data && Math.abs(tms - (priorScore.data.tms ?? 0)) < MIN_TMS_DELTA_TO_UPSERT) continue;
+    if (
+      priorScore.data &&
+      Math.abs(tms - (priorScore.data.tms ?? 0)) < MIN_TMS_DELTA_TO_UPSERT
+    ) continue;
+
+    const durationStr = bestSnap.durationSeconds > 0
+      ? formatDuration(bestSnap.durationSeconds)
+      : null;
 
     await supabase.from('merit_scores').upsert({
       symbol_id:    sym.id,
       ticker:       sym.ticker,
-      current_price: price,
-      price_52w_high: meta52w?.high ?? null,
-      price_52w_low:  meta52w?.low  ?? null,
-      price_52w_pct:  w52Pct,
 
+      current_price:   price,
+      price_52w_high:  meta52w?.high ?? null,
+      price_52w_low:   meta52w?.low  ?? null,
+      price_52w_pct:   w52Pct,
+
+      // SMS columns
       sms_stasis_count:    bestSnap.stasis,
       sms_risk_reward:     bestSnap.riskReward,
-      sms_signal_strength: bestSnap.signalStrength ? ['VERY_STRONG','STRONG','MODERATE','WEAK'].indexOf(bestSnap.signalStrength) + 1 : 0,
+      sms_signal_strength: bestSnap.signalStrength
+        ? ['VERY_STRONG','STRONG','MODERATE','WEAK'].indexOf(bestSnap.signalStrength) + 1
+        : 0,
       sms_duration_hrs:    bestSnap.durationSeconds / 3600,
       sms_total:           sms,
 
@@ -163,14 +192,30 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       fms_total:          fms,
 
       cms_decorr_magnitude: corrData?.decorrelationScore ?? null,
-      cms_delta_rate:       corrData?.corrDelta ?? null,
+      cms_delta_rate:       corrData?.corrDelta          ?? null,
       cms_direction_align:  cms > 0 ? 1 : 0,
       cms_total:            cms,
 
       tms,
 
+      // 23-column dashboard extras
+      band_threshold:      bestSnap.threshold,
+      direction:           bestSnap.direction,
+      signal_strength:     bestSnap.signalStrength ?? null,
+      corr_at_earnings:    corrData?.corrAtEarnings   ?? null,
+      corr_now:            corrData?.corrNow          ?? null,
+      corr_delta:          corrData?.corrDelta        ?? null,
+      decorr_score:        corrData?.decorrelationScore ?? null,
+      divergence:          corrData?.priceVsRevDivergence ?? null,
+      rev_slope_5:         (slopes as Record<string, number | null>)['Rev_Slope_5'] ?? null,
+      fcf_slope_5:         (slopes as Record<string, number | null>)['FCF_Slope_5'] ?? null,
+      fcfy:                (slopes as Record<string, number | null>)['FCFY']        ?? null,
+      take_profit:         bestSnap.takeProfit  ?? null,
+      stop_loss:           bestSnap.stopLoss    ?? null,
+      stasis_duration_str: durationStr,
+
       is_tradable:      sym.is_tradable,
-      is_decorrelating: corrRow.data?.is_decorrelating ?? false,
+      is_decorrelating: cd?.is_decorrelating ?? false,
       is_stasis_active: bestSnap.stasis >= 2,
 
       last_signal_at: bestSnap.stasisStartStr !== '—' ? bestSnap.stasisStartStr : null,

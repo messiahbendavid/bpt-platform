@@ -6,38 +6,47 @@ type DbRow = Record<string, unknown>;
 
 function rowToMeritScore(r: DbRow): MeritScore {
   return {
-    ticker:          r.ticker as string,
-    currentPrice:    r.current_price as number | null,
-    price52wHigh:    r.price_52w_high as number | null,
-    price52wLow:     r.price_52w_low as number | null,
-    price52wPct:     r.price_52w_pct as number | null,
-    sms: {
-      stasisCount:    r.sms_stasis_count as number,
-      riskReward:     r.sms_risk_reward as number,
-      signalStrength: r.sms_signal_strength as number,
-      durationHours:  r.sms_duration_hrs as number,
-    },
-    smsTotal:        r.sms_total as number,
-    fms: {
-      netIncomeScore:    r.fms_net_income as number,
-      cashFlowScore:     r.fms_cash_flows as number,
-      revenueTrendScore: r.fms_revenue_trend as number,
-      percentile52w:     r.fms_52w_percentile as number,
-    },
-    fmsTotal:        r.fms_total as number,
-    cms: {
-      decorrelationMagnitude: r.cms_decorr_magnitude as number,
-      deltaRate:              r.cms_delta_rate as number,
-      directionAlignment:     r.cms_direction_align as -1 | 0 | 1,
-    },
-    cmsTotal:        r.cms_total as number,
-    tms:             r.tms as number,
-    isTradable:      r.is_tradable as boolean,
-    isDecorrelating: r.is_decorrelating as boolean,
-    isStasisActive:  r.is_stasis_active as boolean,
-    lastSignalAt:    r.last_signal_at as string | null,
-    computedAt:      r.computed_at as string,
-    updatedAt:       r.updated_at as string,
+    ticker:          r.ticker          as string,
+    currentPrice:    r.current_price   as number | null,
+    price52wHigh:    r.price_52w_high  as number | null,
+    price52wLow:     r.price_52w_low   as number | null,
+    price52wPct:     r.price_52w_pct   as number | null,
+
+    smsStasisCount:    (r.sms_stasis_count  as number) ?? 0,
+    smsRiskReward:     r.sms_risk_reward    as number | null,
+    smsSignalStrength: (r.sms_signal_strength as number) ?? 0,
+    smsDurationHrs:    (r.sms_duration_hrs   as number) ?? 0,
+    smsTotal:          (r.sms_total          as number) ?? 0,
+
+    fmsTotal:          (r.fms_total   as number) ?? 0,
+    cmsTotal:          (r.cms_total   as number) ?? 0,
+    tms:               (r.tms         as number) ?? 0,
+
+    bandThreshold:  r.band_threshold   as number | null,
+    direction:      r.direction        as 'LONG' | 'SHORT' | null,
+    signalStrength: r.signal_strength  as string | null,
+
+    corrAtEarnings: r.corr_at_earnings as number | null,
+    corrNow:        r.corr_now         as number | null,
+    corrDelta:      r.corr_delta       as number | null,
+    decorrScore:    r.decorr_score     as number | null,
+    divergence:     r.divergence       as string | null,
+
+    revSlope5:      r.rev_slope_5      as number | null,
+    fcfSlope5:      r.fcf_slope_5      as number | null,
+    fcfy:           r.fcfy             as number | null,
+
+    takeProfit:     r.take_profit      as number | null,
+    stopLoss:       r.stop_loss        as number | null,
+    durationStr:    r.stasis_duration_str as string | null,
+
+    isTradable:      (r.is_tradable      as boolean) ?? false,
+    isDecorrelating: (r.is_decorrelating as boolean) ?? false,
+    isStasisActive:  (r.is_stasis_active as boolean) ?? false,
+
+    lastSignalAt:  r.last_signal_at as string | null,
+    computedAt:    r.computed_at    as string,
+    updatedAt:     r.updated_at     as string,
   };
 }
 
