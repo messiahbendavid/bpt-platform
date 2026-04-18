@@ -170,24 +170,36 @@ export async function fetchQuarterlyData(
   // If cached AND prices are present, return immediately
   const cachedWithPrices = (cached ?? []).filter((r) => r.price_at_period != null);
   if (cachedWithPrices.length >= 4) {
-    return (cached ?? []).map((row) => ({
-      ticker,
-      periodEndDate:     row.period_end_date,
-      filingDate:        row.filing_date        ?? null,
-      revenues:          row.revenues           ?? null,
-      netIncome:         row.net_income         ?? null,
-      ncf:               row.ncf               ?? null,
-      ncfoa:             row.ncfoa             ?? null,
-      ncfia:             row.ncfia             ?? null,
-      capex:             row.capex             ?? null,
-      fcf:               row.fcf               ?? null,
-      dilutedEps:        row.diluted_eps       ?? null,
-      operatingIncome:   row.operating_income  ?? null,
-      totalEquity:       row.total_equity      ?? null,
-      totalDebt:         row.total_debt        ?? null,
-      sharesOutstanding: row.shares_outstanding ?? null,
-      priceAtPeriod:     row.price_at_period   ?? null,
-    }));
+    return (cached ?? []).map((row) => {
+      const ncfoa = (row.ncfoa ?? null) as number | null;
+      const ncfia = (row.ncfia ?? null) as number | null;
+      const capex = (row.capex ?? null) as number | null;
+      // Re-derive FCF in case cached value is null or wrong
+      const fcf = (row.fcf ?? null) as number | null
+        ?? (ncfoa !== null
+          ? capex !== null
+            ? ncfoa - capex
+            : ncfia !== null ? ncfoa + ncfia : null
+          : null);
+      return {
+        ticker,
+        periodEndDate:     row.period_end_date as string,
+        filingDate:        (row.filing_date        ?? null) as string | null,
+        revenues:          (row.revenues           ?? null) as number | null,
+        netIncome:         (row.net_income         ?? null) as number | null,
+        ncf:               (row.ncf               ?? null) as number | null,
+        ncfoa,
+        ncfia,
+        capex,
+        fcf,
+        dilutedEps:        (row.diluted_eps       ?? null) as number | null,
+        operatingIncome:   (row.operating_income  ?? null) as number | null,
+        totalEquity:       (row.total_equity      ?? null) as number | null,
+        totalDebt:         (row.total_debt        ?? null) as number | null,
+        sharesOutstanding: (row.shares_outstanding ?? null) as number | null,
+        priceAtPeriod:     (row.price_at_period   ?? null) as number | null,
+      };
+    });
   }
 
   // Fetch financials + 3 years of daily closes (2 API calls total per ticker)

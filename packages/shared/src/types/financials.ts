@@ -33,7 +33,7 @@ export interface CorrelationResult {
   revCorrCurrent: number;
   revCorrDiff: number;
   decorrScore: number;
-  priceVsRevDivergence: 'PRICE_AHEAD' | 'PRICE_BEHIND' | null;
+  priceVsRevDivergence: 'PRICE_AHEAD' | 'PRICE_BEHIND' | 'ALIGNED' | null;
   isDecorrelating: boolean;
   quartersUsed: number;
   computedAt: string;

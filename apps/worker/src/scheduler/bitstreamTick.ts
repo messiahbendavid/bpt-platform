@@ -152,7 +152,7 @@ export async function runBitstreamCycle(symbols: SymbolRecord[]): Promise<void> 
       corrNow:              cd.rev_corr_current     ?? null,
       corrDelta:            cd.rev_corr_diff        ?? null,
       decorrelationScore:   cd.decorr_score         ?? null,
-      priceVsRevDivergence: (cd.price_vs_rev_divergence as 'PRICE_AHEAD' | 'PRICE_BEHIND' | null) ?? null,
+      priceVsRevDivergence: (cd.price_vs_rev_divergence as 'PRICE_AHEAD' | 'PRICE_BEHIND' | 'ALIGNED' | null) ?? null,
     } : null;
 
     const { score: cms } = calculateCMS(corrData, bestSnap.direction);

@@ -40,7 +40,7 @@ export function computeDecorrelation(
   const prevRevenue    = revenues[revenues.length - 2];
   const latestRevenue  = revenues[revenues.length - 1];
 
-  let priceVsRevDivergence: 'PRICE_AHEAD' | 'PRICE_BEHIND' | null = null;
+  let priceVsRevDivergence: 'PRICE_AHEAD' | 'PRICE_BEHIND' | 'ALIGNED' | null = null;
   if (lastPrice > 0 && prevRevenue !== 0) {
     const priceChange = (currentPrice - lastPrice) / lastPrice;
     const revChange   = (latestRevenue - prevRevenue) / Math.abs(prevRevenue);
@@ -49,6 +49,8 @@ export function computeDecorrelation(
       priceVsRevDivergence = 'PRICE_AHEAD';
     } else if (priceChange < -0.10 && revChange >= -0.05) {
       priceVsRevDivergence = 'PRICE_BEHIND';
+    } else {
+      priceVsRevDivergence = 'ALIGNED';
     }
   }
 

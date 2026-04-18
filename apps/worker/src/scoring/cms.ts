@@ -4,8 +4,8 @@ export interface CorrelationData {
   corrAtEarnings: number | null;
   corrNow: number | null;
   corrDelta: number | null;
-  decorrelationScore: number | null;  // already computed by decorrelation.ts formula
-  priceVsRevDivergence: 'PRICE_BEHIND' | 'PRICE_AHEAD' | null;
+  decorrelationScore: number | null;
+  priceVsRevDivergence: 'PRICE_BEHIND' | 'PRICE_AHEAD' | 'ALIGNED' | null;
 }
 
 /** Port of calculate_correlation_merit_score() from app.py */

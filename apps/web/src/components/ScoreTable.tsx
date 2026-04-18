@@ -48,10 +48,11 @@ const COLUMNS = [
     return <span style={{ color: v < 0 ? '#4caf50' : '#f44336' }}>{s}</span>;
   }}),
   col.accessor('decorrScore', { header: 'DCOR', size: 56, cell: (i) => fmtCorr(i.getValue()) }),
-  col.accessor('divergence',  { header: 'DIV',  size: 88, cell: (i) => {
+  col.accessor('divergence',  { header: 'DIV',  size: 80, cell: (i) => {
     const v = i.getValue();
     if (v === 'PRICE_AHEAD')  return <span style={{ color: '#ff9800' }}>AHEAD</span>;
     if (v === 'PRICE_BEHIND') return <span style={{ color: '#2196f3' }}>BEHIND</span>;
+    if (v === 'ALIGNED')      return <span style={{ color: '#666' }}>ALGND</span>;
     return '—';
   }}),
 
