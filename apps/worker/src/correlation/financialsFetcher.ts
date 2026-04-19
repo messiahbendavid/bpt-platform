@@ -238,6 +238,25 @@ export async function fetchQuarterlyData(
   const pricesFound = fresh.filter((q) => q.priceAtPeriod !== null).length;
   console.log(`[financials] ${ticker}: ${pricesFound}/${fresh.length} quarters have priceAtPeriod`);
 
+  // Detect shares-in-thousands: Polygon sometimes returns the raw SEC filing value
+  // where shares are reported "in thousands". If price × shares < quarterly revenue,
+  // the implied market cap is less than one quarter's sales — physically impossible.
+  let sharesMultiplier = 1;
+  for (const q of fresh) {
+    if (q.priceAtPeriod && q.sharesOutstanding && q.revenues && q.revenues > 0) {
+      if (q.priceAtPeriod * q.sharesOutstanding < q.revenues) {
+        sharesMultiplier = 1000;
+        console.warn(`[financials] ${ticker}: shares appear to be in thousands (mktCap=${(q.priceAtPeriod * q.sharesOutstanding / 1e6).toFixed(0)}M < rev=${(q.revenues / 1e6).toFixed(0)}M) — multiplying by 1000`);
+        break;
+      }
+    }
+  }
+  if (sharesMultiplier !== 1) {
+    for (const q of fresh) {
+      if (q.sharesOutstanding !== null) q.sharesOutstanding *= sharesMultiplier;
+    }
+  }
+
   // Diagnostic: log most recent quarter to catch unit errors (shares in thousands, etc.)
   const latest = [...fresh].sort((a, b) => b.periodEndDate.localeCompare(a.periodEndDate))[0];
   if (latest) {
@@ -314,22 +333,24 @@ export function computeMetricSlopes(quarters: QuarterlyFinancials[]): MetricSlop
   const dbt     = sorted.map((q) => q.totalDebt);
   const shrs    = sorted.map((q) => q.sharesOutstanding);
 
+  // Defensive shares correction for cached data: same revenue-based heuristic as at fetch time.
+  // Handles the case where quarters were cached before the fix was deployed.
+  const correctedShrs = sorted.map((q, i) => {
+    const sh = shrs[i];
+    const p  = pr[i];
+    const r  = rev[i];
+    if (sh !== null && p !== null && r !== null && r > 0 && p * sh < r) return sh * 1000;
+    return sh;
+  });
+
   // Derived series
-  // Guard: Polygon sometimes returns shares in thousands (as filed in SEC docs).
-  // If computed market cap is implausibly small (< $100M) for a stock with a
-  // non-trivial price, the shares value is almost certainly in the wrong unit.
-  const fcfyVals: (number | null)[] = sorted.map((q) => {
-    if (q.priceAtPeriod === null || q.sharesOutstanding === null || q.fcf === null) return null;
-    const mktCap = q.priceAtPeriod * q.sharesOutstanding;
-    if (mktCap < 1e8) {
-      // Market cap < $100M for a priced stock → shares unit likely wrong; skip
-      console.warn(`[financials] ${q.ticker} ${q.periodEndDate}: implausible mktCap $${mktCap.toFixed(0)} (price=${q.priceAtPeriod}, shares=${q.sharesOutstanding}) — FCFY skipped`);
-      return null;
-    }
+  const fcfyVals: (number | null)[] = sorted.map((q, i) => {
+    if (pr[i] === null || correctedShrs[i] === null || q.fcf === null) return null;
+    const mktCap = pr[i]! * correctedShrs[i]!;
+    if (mktCap <= 0) return null;
     const fcfy = q.fcf / mktCap;
-    // FCF yield above 50% is almost certainly a data error
     if (Math.abs(fcfy) > 0.5) {
-      console.warn(`[financials] ${q.ticker} ${q.periodEndDate}: FCFY=${(fcfy*100).toFixed(1)}% out of range — skipped`);
+      console.warn(`[financials] ${q.ticker} ${q.periodEndDate}: FCFY=${(fcfy*100).toFixed(1)}% still out of range after shares correction — skipped`);
       return null;
     }
     return fcfy;
@@ -347,12 +368,12 @@ export function computeMetricSlopes(quarters: QuarterlyFinancials[]): MetricSlop
   const de: (number | null)[] = dbt.map((d, i) =>
     d !== null && equity[i] !== null && equity[i]! !== 0 ? d / equity[i]! : null);
   const pb: (number | null)[] = pr.map((p, i) => {
-    const bvps = equity[i] !== null && shrs[i] !== null && shrs[i]! !== 0
-      ? equity[i]! / shrs[i]! : null;
+    const bvps = equity[i] !== null && correctedShrs[i] !== null && correctedShrs[i]! !== 0
+      ? equity[i]! / correctedShrs[i]! : null;
     return p !== null && bvps !== null && bvps !== 0 ? p / bvps : null;
   });
   const ps: (number | null)[] = pr.map((p, i) => {
-    const mktCap = p !== null && shrs[i] !== null ? p * shrs[i]! : null;
+    const mktCap = p !== null && correctedShrs[i] !== null ? p * correctedShrs[i]! : null;
     return mktCap !== null && rev[i] !== null && rev[i]! !== 0 ? mktCap / rev[i]! : null;
   });
 
