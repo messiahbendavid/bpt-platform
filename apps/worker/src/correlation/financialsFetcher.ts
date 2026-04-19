@@ -238,6 +238,22 @@ export async function fetchQuarterlyData(
   const pricesFound = fresh.filter((q) => q.priceAtPeriod !== null).length;
   console.log(`[financials] ${ticker}: ${pricesFound}/${fresh.length} quarters have priceAtPeriod`);
 
+  // Diagnostic: log most recent quarter to catch unit errors (shares in thousands, etc.)
+  const latest = [...fresh].sort((a, b) => b.periodEndDate.localeCompare(a.periodEndDate))[0];
+  if (latest) {
+    const mktCap = latest.priceAtPeriod !== null && latest.sharesOutstanding !== null
+      ? (latest.priceAtPeriod * latest.sharesOutstanding / 1e9).toFixed(2) + 'B'
+      : 'n/a';
+    console.log(
+      `[financials] ${ticker} latest (${latest.periodEndDate}):` +
+      ` price=${latest.priceAtPeriod?.toFixed(2) ?? 'n/a'}` +
+      ` shares=${latest.sharesOutstanding?.toLocaleString() ?? 'n/a'}` +
+      ` mktCap=${mktCap}` +
+      ` fcf=${latest.fcf?.toFixed(0) ?? 'n/a'}` +
+      ` capex=${latest.capex?.toFixed(0) ?? 'n/a'}`
+    );
+  }
+
 
   const rows = fresh.map((q) => ({
     symbol_id:            symbolId,
@@ -299,10 +315,24 @@ export function computeMetricSlopes(quarters: QuarterlyFinancials[]): MetricSlop
   const shrs    = sorted.map((q) => q.sharesOutstanding);
 
   // Derived series
+  // Guard: Polygon sometimes returns shares in thousands (as filed in SEC docs).
+  // If computed market cap is implausibly small (< $100M) for a stock with a
+  // non-trivial price, the shares value is almost certainly in the wrong unit.
   const fcfyVals: (number | null)[] = sorted.map((q) => {
-    const mktCap = q.priceAtPeriod !== null && q.sharesOutstanding !== null
-      ? q.priceAtPeriod * q.sharesOutstanding : null;
-    return mktCap && mktCap > 0 && q.fcf !== null ? q.fcf / mktCap : null;
+    if (q.priceAtPeriod === null || q.sharesOutstanding === null || q.fcf === null) return null;
+    const mktCap = q.priceAtPeriod * q.sharesOutstanding;
+    if (mktCap < 1e8) {
+      // Market cap < $100M for a priced stock → shares unit likely wrong; skip
+      console.warn(`[financials] ${q.ticker} ${q.periodEndDate}: implausible mktCap $${mktCap.toFixed(0)} (price=${q.priceAtPeriod}, shares=${q.sharesOutstanding}) — FCFY skipped`);
+      return null;
+    }
+    const fcfy = q.fcf / mktCap;
+    // FCF yield above 50% is almost certainly a data error
+    if (Math.abs(fcfy) > 0.5) {
+      console.warn(`[financials] ${q.ticker} ${q.periodEndDate}: FCFY=${(fcfy*100).toFixed(1)}% out of range — skipped`);
+      return null;
+    }
+    return fcfy;
   });
   const npm: (number | null)[] = ni.map((n, i) =>
     n !== null && rev[i] !== null && rev[i]! !== 0 ? n / rev[i]! : null);
